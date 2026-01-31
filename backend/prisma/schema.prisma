@@ -1,0 +1,303 @@
+// Prisma schema for PriceProtectionBot
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String    @id @default(uuid())
+  email             String    @unique
+  passwordHash      String?
+  name              String?
+  googleId          String?   @unique
+  gmailAccessToken  String?
+  gmailRefreshToken String?
+  gmailConnected    Boolean   @default(false)
+
+  // Subscription
+  stripeCustomerId     String?   @unique
+  subscriptionId       String?
+  subscriptionStatus   SubscriptionStatus @default(FREE)
+  subscriptionEndDate  DateTime?
+
+  // Settings
+  autoFileClaimsEnabled Boolean @default(false)
+  priceDropThreshold    Float   @default(5.0)  // Minimum $ drop to trigger
+  notificationEmail     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  purchases      Purchase[]
+  claims         Claim[]
+  creditCards    CreditCard[]
+  notifications  Notification[]
+  emailSyncLogs  EmailSyncLog[]
+}
+
+model CreditCard {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  nickname     String   // e.g., "Chase Sapphire"
+  issuer       String   // e.g., "Chase", "Citi", "Amex"
+  lastFour     String   // Last 4 digits for identification
+  cardType     CardType
+
+  // Price protection details
+  protectionDays     Int      @default(60)  // Days after purchase
+  maxClaimAmount     Float    @default(500) // Per item
+  maxAnnualClaims    Float?   // Annual limit if any
+  claimMethod        ClaimMethod
+  claimPortalUrl     String?
+  claimPhoneNumber   String?
+  claimEmail         String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  purchases Purchase[]
+  claims    Claim[]
+
+  @@index([userId])
+}
+
+model Purchase {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  creditCardId String?
+  creditCard   CreditCard? @relation(fields: [creditCardId], references: [id])
+
+  // Product info
+  productName     String
+  productUrl      String?
+  retailer        String
+  retailerOrderId String?
+
+  // Price info
+  purchasePrice   Float
+  currentPrice    Float?
+  lowestPrice     Float?
+  lowestPriceDate DateTime?
+
+  purchaseDate    DateTime
+  protectionEnds  DateTime?
+
+  // Tracking
+  imageUrl        String?
+  category        String?
+  upc             String?
+  asin            String?  // Amazon identifier
+
+  // Source
+  sourceType      PurchaseSource
+  sourceEmailId   String?
+
+  // Status
+  status          PurchaseStatus @default(MONITORING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  priceHistory PriceHistory[]
+  claims       Claim[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([protectionEnds])
+}
+
+model PriceHistory {
+  id         String   @id @default(uuid())
+  purchaseId String
+  purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+
+  price      Float
+  source     String   // Which retailer/source
+  checkedAt  DateTime @default(now())
+
+  @@index([purchaseId])
+  @@index([checkedAt])
+}
+
+model Claim {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purchaseId   String
+  purchase     Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  creditCardId String
+  creditCard   CreditCard @relation(fields: [creditCardId], references: [id])
+
+  // Claim details
+  originalPrice    Float
+  newPrice         Float
+  priceDifference  Float
+
+  // Status tracking
+  status           ClaimStatus @default(DRAFT)
+  filedAt          DateTime?
+  resolvedAt       DateTime?
+
+  // Claim documentation
+  claimNumber      String?
+  proofDocumentUrl String?
+  responseNotes    String?
+
+  // Payout
+  approvedAmount   Float?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
+model Notification {
+  id       String   @id @default(uuid())
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type     NotificationType
+  title    String
+  message  String
+  data     Json?
+  read     Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([read])
+}
+
+model EmailSyncLog {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  status    SyncStatus
+  emailsProcessed Int      @default(0)
+  purchasesFound  Int      @default(0)
+  errorMessage    String?
+
+  startedAt  DateTime @default(now())
+  completedAt DateTime?
+
+  @@index([userId])
+}
+
+model RetailerConfig {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  domain      String   @unique
+
+  // Email parsing
+  emailFromPatterns    String[] // Email sender patterns
+  emailSubjectPatterns String[] // Subject line patterns
+
+  // Price checking
+  priceCheckEnabled    Boolean  @default(true)
+  priceSelector        String?  // CSS selector for price
+  apiEndpoint          String?  // If API available
+
+  // Metadata
+  logoUrl              String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model CardIssuerConfig {
+  id          String   @id @default(uuid())
+  name        String   @unique  // e.g., "Chase", "Citi"
+
+  // Default protection terms
+  defaultProtectionDays  Int
+  defaultMaxClaim        Float
+  defaultAnnualLimit     Float?
+
+  // Claim filing
+  claimMethod           ClaimMethod
+  claimPortalUrl        String?
+  claimPhoneNumber      String?
+  claimEmail            String?
+
+  // Required documents
+  requiredDocs          String[]  // e.g., ["receipt", "price_screenshot", "credit_card_statement"]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Enums
+enum SubscriptionStatus {
+  FREE
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+enum CardType {
+  VISA
+  MASTERCARD
+  AMEX
+  DISCOVER
+  OTHER
+}
+
+enum ClaimMethod {
+  ONLINE_PORTAL
+  PHONE
+  EMAIL
+  MAIL
+}
+
+enum PurchaseSource {
+  EMAIL
+  MANUAL
+  BROWSER_EXTENSION
+  CSV_IMPORT
+}
+
+enum PurchaseStatus {
+  MONITORING
+  PRICE_DROP_DETECTED
+  CLAIM_ELIGIBLE
+  CLAIM_FILED
+  CLAIM_APPROVED
+  CLAIM_DENIED
+  EXPIRED
+}
+
+enum ClaimStatus {
+  DRAFT
+  READY_TO_FILE
+  FILED
+  PENDING_REVIEW
+  ADDITIONAL_INFO_NEEDED
+  APPROVED
+  DENIED
+  EXPIRED
+}
+
+enum NotificationType {
+  PRICE_DROP
+  CLAIM_ELIGIBLE
+  CLAIM_STATUS_UPDATE
+  SUBSCRIPTION
+  SYSTEM
+}
+
+enum SyncStatus {
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}

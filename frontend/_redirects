@@ -1,0 +1,7 @@
+# Netlify redirects
+
+# API proxy to Render backend (update URL after deploying backend)
+/api/*  https://priceprotectionbot-api.onrender.com/api/:splat  200
+
+# SPA fallback
+/*  /index.html  200
