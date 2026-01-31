@@ -1,5 +1,5 @@
 # Backend Dockerfile
-FROM node:18-alpine
+FROM node:20-alpine
 
 # Install dependencies for Puppeteer
 RUN apk add --no-cache \
