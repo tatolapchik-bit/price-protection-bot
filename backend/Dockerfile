@@ -1,18 +1,18 @@
 # Backend Dockerfile
-FROM node:20-alpine
+FROM node:20-slim
 
-# Install dependencies for Puppeteer
-RUN apk add --no-cache \
+# Install dependencies for Puppeteer and OpenSSL
+RUN apt-get update && apt-get install -y \
     chromium \
-    nss \
-    freetype \
-    harfbuzz \
+    fonts-freefont-ttf \
     ca-certificates \
-    ttf-freefont
+    wget \
+    --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 
 # Tell Puppeteer to use installed Chromium
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
