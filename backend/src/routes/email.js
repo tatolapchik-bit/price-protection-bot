@@ -1,6 +1,6 @@
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
-const { authenticate, requireSubscription } = require('../middleware/auth');
+const { authenticate } = require('../middleware/auth');
 const { AppError } = require('../middleware/errorHandler');
 const emailParser = require('../services/emailParser');
 const logger = require('../utils/logger');
@@ -40,8 +40,8 @@ router.get('/status', authenticate, async (req, res, next) => {
   }
 });
 
-// Trigger email sync
-router.post('/sync', authenticate, requireSubscription, async (req, res, next) => {
+// Trigger email sync (available to all users including FREE tier)
+router.post('/sync', authenticate, async (req, res, next) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user.id }
