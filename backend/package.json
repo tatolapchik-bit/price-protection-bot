@@ -9,7 +9,8 @@
     "worker": "node src/workers/priceMonitor.js",
     "test": "jest",
     "migrate": "npx prisma migrate dev",
-    "seed": "node prisma/seed.js"
+    "seed": "node prisma/seed.js",
+        "build": "npx prisma generate && npx prisma db push"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.72.1",
