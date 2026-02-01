@@ -183,7 +183,8 @@ router.patch('/:id', authenticate, [
   body('productName').optional().trim().notEmpty(),
   body('productUrl').optional().isURL(),
   body('creditCardId').optional().isUUID(),
-  body('category').optional().trim()
+  body('category').optional().trim(),
+  body('paymentCardLast4').optional().isLength({ min: 4, max: 4 })
 ], async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -199,7 +200,7 @@ router.patch('/:id', authenticate, [
       throw new AppError('Purchase not found', 404);
     }
 
-    const { productName, productUrl, creditCardId, category } = req.body;
+    const { productName, productUrl, creditCardId, category, paymentCardLast4 } = req.body;
 
     // Recalculate protection end if credit card changes
     let protectionEnds = existing.protectionEnds;
@@ -220,7 +221,8 @@ router.patch('/:id', authenticate, [
         ...(productName && { productName }),
         ...(productUrl && { productUrl }),
         ...(creditCardId && { creditCardId, protectionEnds }),
-        ...(category && { category })
+        ...(category && { category }),
+        ...(paymentCardLast4 && { paymentCardLast4 })
       },
       include: {
         creditCard: {
