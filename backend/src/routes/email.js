@@ -51,17 +51,33 @@ router.post('/sync', authenticate, async (req, res, next) => {
       throw new AppError('Gmail not connected', 400);
     }
 
-    // Check for existing sync in progress
+    // Check for existing sync in progress (with 10 minute timeout)
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
     const existingSync = await prisma.emailSyncLog.findFirst({
       where: {
         userId: req.user.id,
-        status: 'IN_PROGRESS'
+        status: 'IN_PROGRESS',
+        startedAt: { gt: tenMinutesAgo }
       }
     });
 
     if (existingSync) {
-      throw new AppError('Sync already in progress', 409);
+      throw new AppError('Sync already in progress. Please wait a few minutes.', 409);
     }
+
+    // Mark any old stuck syncs as failed
+    await prisma.emailSyncLog.updateMany({
+      where: {
+        userId: req.user.id,
+        status: 'IN_PROGRESS',
+        startedAt: { lte: tenMinutesAgo }
+      },
+      data: {
+        status: 'FAILED',
+        errorMessage: 'Sync timed out',
+        completedAt: new Date()
+      }
+    });
 
     // Create sync log
     const syncLog = await prisma.emailSyncLog.create({
