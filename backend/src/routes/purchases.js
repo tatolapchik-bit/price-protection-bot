@@ -296,6 +296,79 @@ router.get('/:id/price-history', authenticate, async (req, res, next) => {
   }
 });
 
+// DEV ONLY: Manually set price for testing (simulate price drop)
+router.post('/:id/simulate-price-drop', authenticate, async (req, res, next) => {
+  try {
+    const { newPrice } = req.body;
+
+    if (!newPrice || newPrice <= 0) {
+      throw new AppError('Valid newPrice is required', 400);
+    }
+
+    const purchase = await prisma.purchase.findFirst({
+      where: { id: req.params.id, userId: req.user.id },
+      include: { user: true }
+    });
+
+    if (!purchase) {
+      throw new AppError('Purchase not found', 404);
+    }
+
+    const priceDrop = purchase.purchasePrice - newPrice;
+    const priceDropPercent = (priceDrop / purchase.purchasePrice) * 100;
+    const meetsThreshold = priceDrop >= (purchase.user?.priceDropThreshold || 5);
+
+    // Update purchase with new price
+    const updated = await prisma.purchase.update({
+      where: { id: req.params.id },
+      data: {
+        currentPrice: newPrice,
+        lowestPrice: newPrice,
+        lowestPriceDate: new Date(),
+        status: meetsThreshold ? 'PRICE_DROP_DETECTED' : 'MONITORING'
+      }
+    });
+
+    // Create price history entry
+    await prisma.priceHistory.create({
+      data: {
+        purchaseId: purchase.id,
+        price: newPrice,
+        source: 'manual_simulation'
+      }
+    });
+
+    // Create notification if significant drop
+    if (meetsThreshold) {
+      await prisma.notification.create({
+        data: {
+          userId: purchase.userId,
+          type: 'PRICE_DROP',
+          title: 'Price Drop Detected! 💰',
+          message: `${purchase.productName} dropped by $${priceDrop.toFixed(2)} (${priceDropPercent.toFixed(1)}%)`,
+          data: {
+            purchaseId: purchase.id,
+            priceDrop,
+            priceDropPercent,
+            newPrice
+          }
+        }
+      });
+    }
+
+    res.json({
+      success: true,
+      purchasePrice: purchase.purchasePrice,
+      currentPrice: newPrice,
+      priceDrop: priceDrop.toFixed(2),
+      priceDropPercent: priceDropPercent.toFixed(1),
+      status: updated.status
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Get dashboard stats
 router.get('/stats/dashboard', authenticate, async (req, res, next) => {
   try {
