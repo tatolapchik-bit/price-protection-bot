@@ -14,6 +14,7 @@ import {
 import { purchasesAPI, emailAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { format, formatDistanceToNow } from 'date-fns';
+import toast from 'react-hot-toast';
 
 export default function Dashboard() {
   const { user, hasSubscription } = useAuth();
@@ -37,9 +38,13 @@ export default function Dashboard() {
       queryClient.invalidateQueries(['recent-purchases']);
       queryClient.invalidateQueries(['dashboard-stats']);
       setSyncing(false);
+      toast.success('Email sync started! Checking for new purchases...');
     },
-    onError: () => {
+    onError: (error) => {
       setSyncing(false);
+      const errorMsg = error.response?.data?.error || error.message || 'Unknown error';
+      toast.error(`Sync failed: ${errorMsg}`);
+      console.error('Email sync error:', error.response?.data || error);
     }
   });
 

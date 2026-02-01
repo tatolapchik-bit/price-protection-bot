@@ -2,7 +2,19 @@ const Anthropic = require('@anthropic-ai/sdk');
 const logger = require('../utils/logger');
 
 // Initialize Anthropic client - uses ANTHROPIC_API_KEY env var automatically
-const anthropic = new Anthropic();
+let anthropic = null;
+
+function getAnthropicClient() {
+  if (!anthropic) {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      logger.error('ANTHROPIC_API_KEY environment variable is not set!');
+      throw new Error('ANTHROPIC_API_KEY not configured');
+    }
+    anthropic = new Anthropic();
+    logger.info('Anthropic client initialized');
+  }
+  return anthropic;
+}
 
 /**
  * Parse an email using Claude AI to extract purchase information
@@ -64,7 +76,8 @@ If this is NOT a purchase email (marketing, newsletter, account notification, et
 IMPORTANT: Return ONLY valid JSON, no other text.`;
 
   try {
-    const response = await anthropic.messages.create({
+    const client = getAnthropicClient();
+    const response = await client.messages.create({
       model: 'claude-3-haiku-20240307',
       max_tokens: 1024,
       messages: [
