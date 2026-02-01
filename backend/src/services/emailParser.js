@@ -6,6 +6,23 @@ const { parseEmailWithAI, isLikelyPurchase, generatePriceCheckUrl } = require('.
 
 const prisma = new PrismaClient();
 
+// Extract payment card last 4 digits from email body
+function extractPaymentCardLast4(emailBody) {
+    if (!emailBody) return null;
+    const text = emailBody.replace(/<[^>]*>/g, ' ').toLowerCase();
+    const patterns = [
+          /card\s+ending\s+in\s+(\d{4})/i,
+          /[x*]{4}[-\s]?[x*]{4}[-\s]?[x*]{4}[-\s]?(\d{4})/i,
+          /ending\s+in\s+(\d{4})/i,
+          /last\s+4[:\s]+(\d{4})/i,
+        ];
+    for (const pattern of patterns) {
+          const match = text.match(pattern);
+          if (match && match[1]) return match[1];
+    }
+    return null;
+}
+
 class EmailParser {
   async getGmailClient(userId) {
     const user = await prisma.user.findUnique({
@@ -194,6 +211,7 @@ class EmailParser {
           category: aiResult.category || 'other',
           sourceType: 'EMAIL',
           sourceEmailId: emailId,
+                  paymentCardLast4: extractPaymentCardLast4(emailData.body),
           status: 'MONITORING'
         }
       });
