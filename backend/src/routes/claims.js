@@ -88,7 +88,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
 });
 
 // Create claim from eligible purchase
-router.post('/', authenticate, requireSubscription, [
+router.post('/', authenticate, [
   body('purchaseId').isUUID()
 ], async (req, res, next) => {
   try {
@@ -181,7 +181,7 @@ router.post('/', authenticate, requireSubscription, [
 });
 
 // Generate claim documentation
-router.post('/:id/generate-docs', authenticate, requireSubscription, async (req, res, next) => {
+router.post('/:id/generate-docs', authenticate, async (req, res, next) => {
   try {
     const claim = await prisma.claim.findFirst({
       where: {
@@ -217,7 +217,7 @@ router.post('/:id/generate-docs', authenticate, requireSubscription, async (req,
 });
 
 // Mark claim as filed
-router.post('/:id/file', authenticate, requireSubscription, [
+router.post('/:id/file', authenticate, [
   body('claimNumber').optional().trim()
 ], async (req, res, next) => {
   try {

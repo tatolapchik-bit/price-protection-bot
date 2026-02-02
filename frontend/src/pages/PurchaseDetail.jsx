@@ -267,10 +267,10 @@ export default function PurchaseDetail() {
               {isEligible && protectionActive && (
                 <button
                   onClick={() => createClaimMutation.mutate()}
-                  disabled={createClaimMutation.isPending || !hasSubscription}
+                  disabled={createClaimMutation.isPending}
                   className="w-full btn-success"
                 >
-                  {hasSubscription ? 'Create Claim' : 'Upgrade to Create Claim'}
+                  Create Claim
                 </button>
               )}
             </div>
