@@ -264,6 +264,7 @@ export default function PurchaseDetail() {
                 Check Price Now
               </button>
 
+              {/* Create Claim button - available to all users */}
               {isEligible && protectionActive && (
                 <button
                   onClick={() => createClaimMutation.mutate()}
