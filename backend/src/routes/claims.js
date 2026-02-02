@@ -411,4 +411,31 @@ router.get('/:id/instructions', authenticate, async (req, res, next) => {
   }
 });
 
+// AUTO-FILE: Fully automated claim submission
+router.post('/:id/auto-file', authenticate, async (req, res, next) => {
+  try {
+    const claim = await prisma.claim.findFirst({
+      where: {
+        id: req.params.id,
+        userId: req.user.id
+      }
+    });
+
+    if (!claim) {
+      throw new AppError('Claim not found', 404);
+    }
+
+    if (!['DRAFT', 'READY_TO_FILE'].includes(claim.status)) {
+      throw new AppError('Claim has already been filed or processed', 400);
+    }
+
+    // Trigger fully automated filing
+    const result = await claimService.autoFileClaim(claim.id);
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

@@ -1,10 +1,12 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeftIcon,
   DocumentArrowDownIcon,
-  CheckCircleIcon
+  CheckCircleIcon,
+  RocketLaunchIcon,
+  ArrowPathIcon
 } from '@heroicons/react/24/outline';
 import { claimsAPI } from '../services/api';
 import { format } from 'date-fns';
@@ -56,6 +58,25 @@ export default function ClaimDetail() {
     },
     onError: (error) => {
       toast.error(error.response?.data?.error || 'Failed to update status');
+    }
+  });
+
+  // Auto-file mutation for fully automated claim submission
+  const autoFileMutation = useMutation({
+    mutationFn: () => claimsAPI.autoFile(id),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries(['claim', id]);
+      queryClient.invalidateQueries(['claims']);
+      if (result.data.success) {
+        toast.success('🎉 Claim automatically filed! Check your email for confirmation.', {
+          duration: 5000
+        });
+      } else {
+        toast.error(result.data.error || 'Auto-file failed. Please file manually.');
+      }
+    },
+    onError: (error) => {
+      toast.error(error.response?.data?.error || 'Failed to auto-file claim');
     }
   });
 
@@ -219,14 +240,41 @@ export default function ClaimDetail() {
             <h2 className="text-lg font-semibold text-gray-900 mb-4">Actions</h2>
 
             <div className="space-y-3">
+              {/* Primary Action: Auto-File */}
+              {['DRAFT', 'READY_TO_FILE'].includes(claim.status) && (
+                <button
+                  onClick={() => autoFileMutation.mutate()}
+                  disabled={autoFileMutation.isPending}
+                  className="w-full btn-success flex items-center justify-center text-lg py-3"
+                >
+                  {autoFileMutation.isPending ? (
+                    <>
+                      <ArrowPathIcon className="h-6 w-6 mr-2 animate-spin" />
+                      Filing Claim...
+                    </>
+                  ) : (
+                    <>
+                      <RocketLaunchIcon className="h-6 w-6 mr-2" />
+                      Auto-File Claim
+                    </>
+                  )}
+                </button>
+              )}
+
+              {['DRAFT', 'READY_TO_FILE'].includes(claim.status) && (
+                <p className="text-xs text-gray-500 text-center">
+                  We'll automatically submit your claim with all documentation
+                </p>
+              )}
+
               {claim.status === 'DRAFT' && (
                 <button
                   onClick={() => generateDocsMutation.mutate()}
                   disabled={generateDocsMutation.isPending}
-                  className="w-full btn-primary flex items-center justify-center"
+                  className="w-full btn-secondary flex items-center justify-center"
                 >
                   <DocumentArrowDownIcon className="h-5 w-5 mr-2" />
-                  Generate Documentation
+                  Generate Documentation Only
                 </button>
               )}
 
@@ -237,9 +285,9 @@ export default function ClaimDetail() {
                     fileMutation.mutate(claimNumber);
                   }}
                   disabled={fileMutation.isPending}
-                  className="w-full btn-success"
+                  className="w-full btn-secondary"
                 >
-                  Mark as Filed
+                  Mark as Filed Manually
                 </button>
               )}
 

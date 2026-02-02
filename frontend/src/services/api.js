@@ -63,6 +63,7 @@ export const claimsAPI = {
   create: (purchaseId) => api.post('/claims', { purchaseId }),
   generateDocs: (id) => api.post(`/claims/${id}/generate-docs`),
   file: (id, claimNumber) => api.post(`/claims/${id}/file`, { claimNumber }),
+  autoFile: (id) => api.post(`/claims/${id}/auto-file`),
   updateStatus: (id, data) => api.patch(`/claims/${id}/status`, data),
   delete: (id) => api.delete(`/claims/${id}`),
   getInstructions: (id) => api.get(`/claims/${id}/instructions`)
