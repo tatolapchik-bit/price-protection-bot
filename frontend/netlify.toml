@@ -13,7 +13,7 @@
 # Proxy API requests to Render backend - MUST come before SPA catch-all!
 [[redirects]]
   from = "/api/*"
-  to = "https://price-protection-api.onrender.com/api/:splat"
+  to = "https://price-protection-bot.onrender.com/api/:splat"
   status = 200
   force = true
 
