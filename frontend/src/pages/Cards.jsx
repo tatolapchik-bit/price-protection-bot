@@ -3,13 +3,16 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   PlusIcon,
   CreditCardIcon,
-  TrashIcon
+  TrashIcon,
+  BoltIcon,
+  CheckCircleIcon
 } from '@heroicons/react/24/outline';
 import { cardsAPI } from '../services/api';
 import toast from 'react-hot-toast';
 
 export default function Cards() {
   const [showForm, setShowForm] = useState(false);
+  const [showQuickAdd, setShowQuickAdd] = useState(false);
   const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery({
@@ -37,16 +40,36 @@ export default function Cards() {
           <h1 className="text-2xl font-bold text-gray-900">Credit Cards</h1>
           <p className="text-gray-600 mt-1">Manage your cards for price protection tracking.</p>
         </div>
-        <button
-          onClick={() => setShowForm(true)}
-          className="btn-primary"
-        >
-          <PlusIcon className="h-5 w-5 mr-2" />
-          Add Card
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setShowQuickAdd(true)}
+            className="btn-primary"
+          >
+            <BoltIcon className="h-5 w-5 mr-2" />
+            Quick Add
+          </button>
+          <button
+            onClick={() => setShowForm(true)}
+            className="btn-secondary"
+          >
+            <PlusIcon className="h-5 w-5 mr-2" />
+            Manual Add
+          </button>
+        </div>
       </div>
 
-      {/* Add Card Form */}
+      {/* Quick Add Card Form */}
+      {showQuickAdd && (
+        <QuickAddCardForm
+          onClose={() => setShowQuickAdd(false)}
+          onSuccess={() => {
+            setShowQuickAdd(false);
+            queryClient.invalidateQueries(['cards']);
+          }}
+        />
+      )}
+
+      {/* Manual Add Card Form */}
       {showForm && (
         <AddCardForm
           onClose={() => setShowForm(false)}
@@ -95,7 +118,7 @@ export default function Cards() {
                   <div className="ml-4">
                     <h3 className="font-semibold text-gray-900">{card.nickname}</h3>
                     <p className="text-sm text-gray-500">
-                      {card.issuer} •••• {card.lastFour}
+                      {card.issuer} â¢â¢â¢â¢ {card.lastFour}
                     </p>
                   </div>
                 </div>
@@ -128,6 +151,23 @@ export default function Cards() {
                   <p className="text-gray-500">Claims</p>
                   <p className="font-medium">{card._count?.claims || 0}</p>
                 </div>
+              </div>
+
+              {/* Auto-claim indicator */}
+              <div className="mt-4 pt-4 border-t flex items-center justify-between">
+                <span className="text-sm text-gray-500">Auto-Claim</span>
+                <span className={`inline-flex items-center px-2 py-1 text-xs font-medium rounded-full ${
+                  card.autoClaimEnabled
+                    ? 'bg-green-100 text-green-800'
+                    : 'bg-gray-100 text-gray-600'
+                }`}>
+                  {card.autoClaimEnabled ? (
+                    <>
+                      <CheckCircleIcon className="h-3 w-3 mr-1" />
+                      Enabled
+                    </>
+                  ) : 'Disabled'}
+                </span>
               </div>
             </div>
           ))}
@@ -312,6 +352,153 @@ function AddCardForm({ onClose, onSuccess }) {
             className="btn-primary"
           >
             {createMutation.isPending ? 'Adding...' : 'Add Card'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function QuickAddCardForm({ onClose, onSuccess }) {
+  const [cardNumber, setCardNumber] = useState('');
+  const [nickname, setNickname] = useState('');
+  const [detected, setDetected] = useState(null);
+  const [isDetecting, setIsDetecting] = useState(false);
+
+  const quickAddMutation = useMutation({
+    mutationFn: ({ cardNumber, nickname }) => cardsAPI.quickAdd(cardNumber, nickname || undefined),
+    onSuccess: (response) => {
+      toast.success(`${response.data.detected?.issuer || 'Card'} added successfully!`);
+      onSuccess();
+    },
+    onError: (error) => {
+      toast.error(error.response?.data?.error || 'Failed to add card');
+    }
+  });
+
+  // Auto-detect card when number is entered
+  const handleCardNumberChange = async (value) => {
+    // Only allow numbers and format with spaces
+    const cleaned = value.replace(/\D/g, '');
+    const formatted = cleaned.replace(/(\d{4})(?=\d)/g, '$1 ');
+    setCardNumber(formatted);
+
+    // Detect card when we have enough digits
+    if (cleaned.length >= 13) {
+      setIsDetecting(true);
+      try {
+        const response = await cardsAPI.detectCard(cleaned);
+        setDetected(response.data);
+        // Auto-set nickname suggestion
+        if (!nickname && response.data.issuer) {
+          setNickname(`${response.data.issuer} ****${response.data.lastFour}`);
+        }
+      } catch (error) {
+        setDetected({ error: error.response?.data?.error || 'Could not detect card' });
+      }
+      setIsDetecting(false);
+    } else {
+      setDetected(null);
+    }
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    const cleanNumber = cardNumber.replace(/\s/g, '');
+    quickAddMutation.mutate({ cardNumber: cleanNumber, nickname });
+  };
+
+  return (
+    <div className="card p-6 mb-6 border-2 border-primary-200 bg-primary-50/30">
+      <div className="flex items-center gap-2 mb-4">
+        <BoltIcon className="h-6 w-6 text-primary-600" />
+        <h2 className="text-lg font-semibold text-gray-900">Quick Add Card</h2>
+      </div>
+
+      <p className="text-sm text-gray-600 mb-4">
+        Enter your card number and we'll automatically detect the issuer and price protection details.
+      </p>
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="label">Card Number *</label>
+          <input
+            type="text"
+            value={cardNumber}
+            onChange={(e) => handleCardNumberChange(e.target.value)}
+            className="input text-lg tracking-wider font-mono"
+            placeholder="4111 1111 1111 1111"
+            maxLength={23}
+            required
+            autoComplete="cc-number"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            Your card number is encrypted and stored securely. We use it to auto-detect the issuer and file claims.
+          </p>
+        </div>
+
+        {/* Detection Result */}
+        {isDetecting && (
+          <div className="flex items-center gap-2 text-sm text-gray-600">
+            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary-600"></div>
+            Detecting card...
+          </div>
+        )}
+
+        {detected && !detected.error && (
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <CheckCircleIcon className="h-5 w-5 text-green-600" />
+              <span className="font-medium text-green-800">Card Detected!</span>
+            </div>
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <span className="text-gray-600">Issuer:</span>
+                <span className="ml-2 font-medium">{detected.fullName || detected.issuer}</span>
+              </div>
+              <div>
+                <span className="text-gray-600">Type:</span>
+                <span className="ml-2 font-medium">{detected.cardType}</span>
+              </div>
+              <div>
+                <span className="text-gray-600">Protection:</span>
+                <span className="ml-2 font-medium">{detected.priceProtection?.protectionDays || 60} days</span>
+              </div>
+              <div>
+                <span className="text-gray-600">Max Claim:</span>
+                <span className="ml-2 font-medium">${detected.priceProtection?.maxClaimAmount || 500}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {detected?.error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
+            {detected.error}
+          </div>
+        )}
+
+        <div>
+          <label className="label">Card Nickname (optional)</label>
+          <input
+            type="text"
+            value={nickname}
+            onChange={(e) => setNickname(e.target.value)}
+            className="input"
+            placeholder="e.g., My Amex Gold"
+          />
+        </div>
+
+        <div className="flex justify-end space-x-4 pt-4 border-t">
+          <button type="button" onClick={onClose} className="btn-secondary">
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={quickAddMutation.isPending || !detected || detected.error}
+            className="btn-primary"
+          >
+            {quickAddMutation.isPending ? 'Adding...' : 'Add Card'}
           </button>
         </div>
       </form>
