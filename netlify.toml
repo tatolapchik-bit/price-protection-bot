@@ -1,2 +1,37 @@
+# Netlify configuration for PriceProtectionBot
+
 [build]
   base = "frontend"
+  command = "npm install && npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "18"
+
+# Proxy API requests to Render backend - MUST come before SPA catch-all!
+[[redirects]]
+  from = "/api/*"
+  to = "https://price-protection-bot.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+# SPA redirect - send all other routes to index.html (must be LAST)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Security headers
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    X-XSS-Protection = "1; mode=block"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# Cache static assets
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
