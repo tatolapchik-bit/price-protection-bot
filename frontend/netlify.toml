@@ -10,18 +10,18 @@
 [build.environment]
   NODE_VERSION = "18"
 
-# SPA redirect - send all routes to index.html
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
-
-# Proxy API requests to Render backend
+# Proxy API requests to Render backend - MUST come before SPA catch-all!
 [[redirects]]
   from = "/api/*"
   to = "https://price-protection-api.onrender.com/api/:splat"
   status = 200
   force = true
+
+# SPA redirect - send all other routes to index.html (must be LAST)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
 
 # Security headers
 [[headers]]
