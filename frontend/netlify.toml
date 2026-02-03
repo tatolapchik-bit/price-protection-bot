@@ -1,9 +1,6 @@
 # Netlify configuration for PriceProtectionBot Frontend
 
 [build]
-  # Base directory (relative to repo root)
-  base = "frontend"
-
   # Build command
   command = "npm install && npm run build"
 
@@ -22,7 +19,7 @@
 # Proxy API requests to Render backend
 [[redirects]]
   from = "/api/*"
-  to = "https://priceprotectionbot-api.onrender.com/api/:splat"
+  to = "https://price-protection-api.onrender.com/api/:splat"
   status = 200
   force = true
 
