@@ -1,6 +1,6 @@
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
-const { authenticate } = require('../middleware/auth');
+const { authenticate, requireSubscription } = require('../middleware/auth');
 const { AppError } = require('../middleware/errorHandler');
 const emailParser = require('../services/emailParser');
 const logger = require('../utils/logger');
@@ -51,33 +51,17 @@ router.post('/sync', authenticate, async (req, res, next) => {
       throw new AppError('Gmail not connected', 400);
     }
 
-    // Check for existing sync in progress (with 10 minute timeout)
-    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+    // Check for existing sync in progress
     const existingSync = await prisma.emailSyncLog.findFirst({
       where: {
         userId: req.user.id,
-        status: 'IN_PROGRESS',
-        startedAt: { gt: tenMinutesAgo }
+        status: 'IN_PROGRESS'
       }
     });
 
     if (existingSync) {
-      throw new AppError('Sync already in progress. Please wait a few minutes.', 409);
+      throw new AppError('Sync already in progress', 409);
     }
-
-    // Mark any old stuck syncs as failed
-    await prisma.emailSyncLog.updateMany({
-      where: {
-        userId: req.user.id,
-        status: 'IN_PROGRESS',
-        startedAt: { lte: tenMinutesAgo }
-      },
-      data: {
-        status: 'FAILED',
-        errorMessage: 'Sync timed out',
-        completedAt: new Date()
-      }
-    });
 
     // Create sync log
     const syncLog = await prisma.emailSyncLog.create({
@@ -130,6 +114,56 @@ router.get('/sync-history', authenticate, async (req, res, next) => {
     });
 
     res.json(syncs);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Re-scan existing purchases to detect and link cards
+router.post('/rescan-cards', authenticate, async (req, res, next) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id }
+    });
+
+    if (!user.gmailConnected) {
+      throw new AppError('Gmail not connected', 400);
+    }
+
+    // Get purchases without a linked card that have a sourceEmailId
+    const purchasesWithoutCards = await prisma.purchase.findMany({
+      where: {
+        userId: req.user.id,
+        creditCardId: null,
+        sourceEmailId: { not: null }
+      },
+      select: {
+        id: true,
+        sourceEmailId: true,
+        productName: true,
+        retailer: true
+      }
+    });
+
+    logger.info(`Found ${purchasesWithoutCards.length} purchases without cards to rescan for user ${req.user.id}`);
+
+    if (purchasesWithoutCards.length === 0) {
+      return res.json({
+        message: 'No purchases need card detection',
+        processed: 0,
+        cardsCreated: 0,
+        purchasesLinked: 0
+      });
+    }
+
+    // Start async rescan (don't wait)
+    emailParser.rescanPurchasesForCards(user.id, purchasesWithoutCards)
+      .catch(err => logger.error('Card rescan failed', err));
+
+    res.json({
+      message: 'Card detection started',
+      purchasesToProcess: purchasesWithoutCards.length
+    });
   } catch (error) {
     next(error);
   }
