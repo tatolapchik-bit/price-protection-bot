@@ -3,6 +3,7 @@ const cheerio = require('cheerio');
 const axios = require('axios');
 const { PrismaClient } = require('@prisma/client');
 const logger = require('../utils/logger');
+const claimService = require('./claimService');
 
 const prisma = new PrismaClient();
 
@@ -155,7 +156,7 @@ class PriceMonitor {
             userId: purchase.userId,
             type: 'PRICE_DROP',
             title: 'Price Drop Detected! 💰',
-            message: `${purchase.productName} dropped by $${priceDrop.toFixed(2)} (${priceDropPercent.toFixed(1)}%)${isWithinProtection ? ' - Eligible for claim!' : ''}`,
+            message: `${purchase.productName} dropped by ${priceDrop.toFixed(2)} (${priceDropPercent.toFixed(1)}%)${isWithinProtection ? ' - Eligible for claim!' : ''}`,
             data: {
               purchaseId,
               priceDrop,
@@ -165,6 +166,39 @@ class PriceMonitor {
             }
           }
         });
+
+        // AUTO-CLAIM: If card has autoClaimEnabled, automatically create and file claim
+        if (isWithinProtection && purchase.creditCard && purchase.creditCard.autoClaimEnabled) {
+          try {
+            logger.info(`Auto-claim triggered for purchase ${purchaseId}`);
+            
+            // Create the claim
+            const claim = await prisma.claim.create({
+              data: {
+                userId: purchase.userId,
+                purchaseId: purchaseId,
+                creditCardId: purchase.creditCard.id,
+                originalPrice: purchase.purchasePrice,
+                newPrice: currentPrice,
+                priceDifference: priceDrop,
+                status: 'PENDING',
+                autoFiled: true
+              }
+            });
+            
+            // Auto-file the claim
+            const fileResult = await claimService.autoFileClaim(claim.id);
+            
+            if (fileResult.success) {
+              logger.info(`Auto-claim filed successfully for purchase ${purchaseId}: claim ${claim.id}`);
+              updateData.status = 'CLAIM_FILED';
+            } else {
+              logger.warn(`Auto-claim filing failed for purchase ${purchaseId}: ${fileResult.error}`);
+            }
+          } catch (claimError) {
+            logger.error(`Auto-claim error for purchase ${purchaseId}:`, claimError);
+          }
+        }
 
         logger.info(`Price drop detected for ${purchaseId}: $${priceDrop.toFixed(2)} (${priceDropPercent.toFixed(1)}%)`);
       }
