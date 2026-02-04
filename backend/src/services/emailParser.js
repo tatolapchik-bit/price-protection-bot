@@ -560,6 +560,84 @@ class EmailParser {
       return null;
     }
   }
+
+    /**
+   * Re-scan existing purchases to detect and link cards
+   * @param {string} userId
+   * @param {Array} purchases - Array of {id, sourceEmailId, productName, retailer}
+   */
+  async rescanPurchasesForCards(userId, purchases) {
+    let cardsCreated = 0;
+    let purchasesLinked = 0;
+
+    try {
+      const gmail = await this.getGmailClient(userId);
+
+      for (const purchase of purchases) {
+        try {
+          if (!purchase.sourceEmailId) continue;
+
+          const fullMessage = await gmail.users.messages.get({
+            userId: 'me',
+            id: purchase.sourceEmailId,
+            format: 'raw'
+          });
+
+          const rawEmail = Buffer.from(fullMessage.data.raw, 'base64').toString('utf-8');
+          const parsed = await simpleParser(rawEmail);
+
+          const body = parsed.text || parsed.html || '';
+          const subject = parsed.subject || '';
+          const fullText = `${subject} ${body}`;
+
+          const cardLast4 = this.extractCardLast4(fullText);
+
+          if (cardLast4) {
+            const card = await this.matchCardToUser(userId, cardLast4, fullText);
+
+            if (card) {
+              await prisma.purchase.update({
+                where: { id: purchase.id },
+                data: {
+                  creditCardId: card.id,
+                  protectionEnds: new Date(Date.now() + (card.protectionDays * 24 * 60 * 60 * 1000))
+                }
+              });
+              purchasesLinked++;
+
+              if (card.cardName && card.cardName.includes('Auto-detected')) {
+                cardsCreated++;
+              }
+
+              logger.info(`Linked purchase ${purchase.id} (${purchase.productName}) to card ${card.id} (${card.lastFour})`);
+            }
+          }
+        } catch (emailError) {
+          logger.warn(`Failed to rescan email for purchase ${purchase.id}: ${emailError.message}`);
+        }
+      }
+
+      if (purchasesLinked > 0 || cardsCreated > 0) {
+        await prisma.notification.create({
+          data: {
+            userId,
+            type: 'SYSTEM',
+            title: 'Card Detection Complete',
+            message: `Card detection completed: ${cardsCreated} new card(s) detected, ${purchasesLinked} purchase(s) linked to cards.`,
+            data: { cardsCreated, purchasesLinked }
+          }
+        });
+      }
+
+      logger.info(`Card rescan completed for user ${userId}: ${cardsCreated} cards created, ${purchasesLinked} purchases linked`);
+
+      return { cardsCreated, purchasesLinked };
+    } catch (error) {
+      logger.error(`Card rescan failed for user ${userId}: ${error.message}`);
+      throw error;
+    }
+  }
+
 }
 
 module.exports = new EmailParser();
