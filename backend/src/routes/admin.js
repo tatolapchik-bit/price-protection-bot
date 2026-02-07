@@ -517,4 +517,40 @@ router.post('/rescan-and-fix/:purchaseId', adminAuth, async (req, res, next) => 
   }
 });
 
+// ── GET /api/admin/reauth-gmail ──────────────────────────────────────────────
+// Generate a Gmail re-auth URL with updated scopes (including gmail.send).
+// The user navigates to this URL, authorizes, and gets redirected back to the
+// existing /api/auth/google/callback which saves the new tokens.
+router.get('/reauth-gmail', adminAuth, async (req, res, next) => {
+  try {
+    const oauth2Client = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      process.env.GOOGLE_REDIRECT_URI
+    );
+
+    const scopes = [
+      'https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/userinfo.profile',
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/gmail.send'
+    ];
+
+    const url = oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: scopes,
+      prompt: 'consent'
+    });
+
+    // If redirect=true, take user directly to the auth URL
+    if (req.query.redirect === 'true') {
+      return res.redirect(url);
+    }
+
+    res.json({ url, message: 'Navigate to this URL to re-authorize Gmail with send permissions' });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;
