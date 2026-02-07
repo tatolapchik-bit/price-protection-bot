@@ -4,6 +4,7 @@ const { body, validationResult } = require('express-validator');
 const { authenticate, requireSubscription } = require('../middleware/auth');
 const { AppError } = require('../middleware/errorHandler');
 const claimService = require('../services/claimService');
+const autoClaimFiler = require('../services/autoClaimFiler');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -429,8 +430,8 @@ router.post('/:id/auto-file', authenticate, async (req, res, next) => {
       throw new AppError('Claim has already been filed or processed', 400);
     }
 
-    // Trigger fully automated filing
-    const result = await claimService.autoFileClaim(claim.id);
+    // Trigger fully automated filing (tries portal first, falls back to email)
+    const result = await autoClaimFiler.autoFileClaim(claim.id);
 
     res.json(result);
   } catch (error) {

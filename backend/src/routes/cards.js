@@ -3,6 +3,7 @@ const { PrismaClient } = require('@prisma/client');
 const { body, validationResult } = require('express-validator');
 const { authenticate } = require('../middleware/auth');
 const { AppError } = require('../middleware/errorHandler');
+const { detectCardIssuer, getPriceProtectionInfo } = require('../utils/cardUtils');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -34,6 +35,86 @@ router.get('/issuers', async (req, res, next) => {
     });
 
     res.json(issuers);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Detect card issuer from card number
+router.post('/detect', authenticate, [
+  body('cardNumber').trim().notEmpty()
+], async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      throw new AppError('Card number is required', 400);
+    }
+
+    const { cardNumber } = req.body;
+    const result = detectCardIssuer(cardNumber);
+
+    if (result.error) {
+      throw new AppError(result.error, 400);
+    }
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Quick-add card with auto-detection
+router.post('/quick-add', authenticate, [
+  body('cardNumber').trim().notEmpty(),
+  body('nickname').optional().trim()
+], async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      throw new AppError('Card number is required', 400);
+    }
+
+    const { cardNumber, nickname } = req.body;
+    const detected = detectCardIssuer(cardNumber);
+
+    if (detected.error || !detected.isValid) {
+      throw new AppError(detected.error || 'Invalid card number', 400);
+    }
+
+    // Check for duplicate
+    const existing = await prisma.creditCard.findFirst({
+      where: {
+        userId: req.user.id,
+        lastFour: detected.lastFour,
+        issuer: detected.issuer
+      }
+    });
+    if (existing) {
+      throw new AppError('A card with these details already exists', 409);
+    }
+
+    // Get price protection info
+    const protection = detected.priceProtection || getPriceProtectionInfo(detected.issuer);
+
+    const card = await prisma.creditCard.create({
+      data: {
+        userId: req.user.id,
+        nickname: nickname || `${detected.fullName || detected.issuer} ****${detected.lastFour}`,
+        issuer: detected.issuer,
+        lastFour: detected.lastFour,
+        cardType: detected.cardType || 'OTHER',
+        network: detected.issuerKey || null,
+        protectionDays: protection?.protectionDays || 60,
+        maxClaimAmount: protection?.maxClaimAmount || 500,
+        claimMethod: protection?.claimMethod || 'EMAIL',
+        claimPortalUrl: protection?.claimPortalUrl || null,
+        claimPhoneNumber: protection?.claimPhone || null,
+        claimEmail: protection?.claimEmail || null,
+        autoClaimEnabled: false
+      }
+    });
+
+    res.status(201).json({ card, detected });
   } catch (error) {
     next(error);
   }

@@ -3,7 +3,7 @@ const cheerio = require('cheerio');
 const axios = require('axios');
 const { PrismaClient } = require('@prisma/client');
 const logger = require('../utils/logger');
-const claimService = require('./claimService');
+const autoClaimFiler = require('./autoClaimFiler');
 
 const prisma = new PrismaClient();
 
@@ -171,29 +171,44 @@ class PriceMonitor {
         if (isWithinProtection && purchase.creditCard && purchase.creditCard.autoClaimEnabled) {
           try {
             logger.info(`Auto-claim triggered for purchase ${purchaseId}`);
-            
-            // Create the claim
-            const claim = await prisma.claim.create({
-              data: {
-                userId: purchase.userId,
+
+            // Check if a claim already exists for this purchase
+            const existingClaim = await prisma.claim.findFirst({
+              where: {
                 purchaseId: purchaseId,
-                creditCardId: purchase.creditCard.id,
-                originalPrice: purchase.purchasePrice,
-                newPrice: currentPrice,
-                priceDifference: priceDrop,
-                status: 'PENDING',
-                autoFiled: true
+                status: { notIn: ['DENIED', 'EXPIRED'] }
               }
             });
-            
-            // Auto-file the claim
-            const fileResult = await claimService.autoFileClaim(claim.id);
-            
-            if (fileResult.success) {
-              logger.info(`Auto-claim filed successfully for purchase ${purchaseId}: claim ${claim.id}`);
-              updateData.status = 'CLAIM_FILED';
+
+            if (!existingClaim) {
+              // Create the claim
+              const claim = await prisma.claim.create({
+                data: {
+                  userId: purchase.userId,
+                  purchaseId: purchaseId,
+                  creditCardId: purchase.creditCard.id,
+                  originalPrice: purchase.purchasePrice,
+                  newPrice: currentPrice,
+                  priceDifference: Math.min(priceDrop, purchase.creditCard.maxClaimAmount),
+                  status: 'DRAFT',
+                  autoFiled: true,
+                  statusHistory: [
+                    { status: 'DRAFT', timestamp: new Date().toISOString(), notes: 'Auto-created from price drop detection' }
+                  ]
+                }
+              });
+
+              // Auto-file the claim (tries portal first, then email)
+              const fileResult = await autoClaimFiler.autoFileClaim(claim.id);
+
+              if (fileResult.success) {
+                logger.info(`Auto-claim filed successfully for purchase ${purchaseId}: claim ${claim.id}`);
+                updateData.status = 'CLAIM_FILED';
+              } else {
+                logger.warn(`Auto-claim filing failed for purchase ${purchaseId}: ${fileResult.error || 'unknown error'}`);
+              }
             } else {
-              logger.warn(`Auto-claim filing failed for purchase ${purchaseId}: ${fileResult.error}`);
+              logger.info(`Skipping auto-claim for purchase ${purchaseId}: claim already exists (${existingClaim.id})`);
             }
           } catch (claimError) {
             logger.error(`Auto-claim error for purchase ${purchaseId}:`, claimError);

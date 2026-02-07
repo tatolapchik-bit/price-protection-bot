@@ -490,7 +490,8 @@ class EmailParser {
         autoClaimEnabled: true,
         protectionDays: true,
         network: true,
-        issuer: true
+        issuer: true,
+        nickname: true
       }
     });
 
@@ -527,6 +528,18 @@ class EmailParser {
       }
     }
 
+    // Map detected network to CardType enum
+    let cardType = 'OTHER';
+    const networkToCardType = {
+      visa: 'VISA',
+      mastercard: 'MASTERCARD',
+      amex: 'AMEX',
+      discover: 'DISCOVER'
+    };
+    if (detectedNetwork && networkToCardType[detectedNetwork]) {
+      cardType = networkToCardType[detectedNetwork];
+    }
+
     try {
       // Create the new card automatically
       const newCard = await prisma.creditCard.create({
@@ -535,9 +548,11 @@ class EmailParser {
           lastFour: cardLast4,
           network: network,
           issuer: issuer,
-          cardName: `Auto-detected Card (${cardLast4})`,
+          nickname: `Auto-detected Card (${cardLast4})`,
+          cardType: cardType,
           protectionDays: protectionDays,
-          autoClaimEnabled: true // Enable auto-claim by default
+          claimMethod: 'EMAIL',
+          autoClaimEnabled: true
         }
       });
 
@@ -596,16 +611,21 @@ class EmailParser {
             const card = await this.matchCardToUser(userId, cardLast4, fullText);
 
             if (card) {
+              // Get the purchase to use its purchaseDate for protection calculation
+              const fullPurchase = await prisma.purchase.findUnique({ where: { id: purchase.id } });
+              const purchaseDate = fullPurchase?.purchaseDate || new Date();
+              const protectionEnds = new Date(purchaseDate.getTime() + (card.protectionDays * 24 * 60 * 60 * 1000));
+
               await prisma.purchase.update({
                 where: { id: purchase.id },
                 data: {
                   creditCardId: card.id,
-                  protectionEnds: new Date(Date.now() + (card.protectionDays * 24 * 60 * 60 * 1000))
+                  protectionEnds: protectionEnds
                 }
               });
               purchasesLinked++;
 
-              if (card.cardName && card.cardName.includes('Auto-detected')) {
+              if (card.nickname && card.nickname.includes('Auto-detected')) {
                 cardsCreated++;
               }
 

@@ -75,7 +75,9 @@ export const cardsAPI = {
   create: (data) => api.post('/cards', data),
   update: (id, data) => api.patch(`/cards/${id}`, data),
   delete: (id) => api.delete(`/cards/${id}`),
-  getStats: (id) => api.get(`/cards/${id}/stats`)
+  getStats: (id) => api.get(`/cards/${id}/stats`),
+  detectCard: (cardNumber) => api.post('/cards/detect', { cardNumber }),
+  quickAdd: (cardNumber, nickname) => api.post('/cards/quick-add', { cardNumber, nickname })
 };
 
 export const subscriptionAPI = {

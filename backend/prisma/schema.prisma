@@ -49,15 +49,19 @@ model CreditCard {
   issuer       String   // e.g., "Chase", "Citi", "Amex"
   lastFour     String   // Last 4 digits for identification
   cardType     CardType
+  network      String?  // e.g., "visa", "mastercard" - detected from email/BIN
 
   // Price protection details
   protectionDays     Int      @default(60)  // Days after purchase
   maxClaimAmount     Float    @default(500) // Per item
   maxAnnualClaims    Float?   // Annual limit if any
-  claimMethod        ClaimMethod
+  claimMethod        ClaimMethod @default(EMAIL)
   claimPortalUrl     String?
   claimPhoneNumber   String?
   claimEmail         String?
+
+  // Auto-claim
+  autoClaimEnabled   Boolean  @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -66,6 +70,7 @@ model CreditCard {
   claims    Claim[]
 
   @@index([userId])
+  @@index([lastFour])
 }
 
 model Purchase {
@@ -147,6 +152,19 @@ model Claim {
   filedAt          DateTime?
   resolvedAt       DateTime?
 
+  // Auto-filing
+  autoFiled              Boolean   @default(false)
+  claimEmailSentAt       DateTime?
+  claimEmailMessageId    String?
+  claimEmailTo           String?
+  claimEmailSubject      String?
+  claimEmailBody         String?   @db.Text
+  claimEmailScreenshot   String?
+  priceScreenshotUrl     String?
+
+  // Status history
+  statusHistory    Json?  // Array of {status, timestamp, notes}
+
   // Claim documentation
   claimNumber      String?
   proofDocumentUrl String?
@@ -154,12 +172,14 @@ model Claim {
 
   // Payout
   approvedAmount   Float?
+  payoutReceivedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([userId])
   @@index([status])
+  @@index([purchaseId])
 }
 
 model Notification {
@@ -281,17 +301,21 @@ enum PurchaseStatus {
 enum ClaimStatus {
   DRAFT
   READY_TO_FILE
+  PENDING
+  EMAIL_SENT
   FILED
   PENDING_REVIEW
   ADDITIONAL_INFO_NEEDED
   APPROVED
   DENIED
   EXPIRED
+  MONEY_RECEIVED
 }
 
 enum NotificationType {
   PRICE_DROP
   CLAIM_ELIGIBLE
+  CLAIM_FILED
   CLAIM_STATUS_UPDATE
   SUBSCRIPTION
   SYSTEM
