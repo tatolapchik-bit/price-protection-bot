@@ -334,7 +334,7 @@ class EmailParser {
     });
 
     // Create notification with card linkage info
-    const cardInfo = matchedCard
+    const cardInfoMsg = matchedCard
       ? ` (linked to card ending ${cardLast4})`
       : cardLast4
         ? ` (card ending ${cardLast4} not found - please add your card)`
@@ -346,7 +346,7 @@ class EmailParser {
         userId,
         type: 'SYSTEM',
         title: 'New Purchase Detected',
-        message: `Found a purchase from ${retailer}: ${productName || 'Item'} for $${prices[0].toFixed(2)}${cardInfo}${urlInfo}`,
+        message: `Found a purchase from ${retailer}: ${productName || 'Item'} for $${prices[0].toFixed(2)}${cardInfoMsg}${urlInfo}`,
         data: { purchaseId: purchase.id, needsCardLink: !matchedCard, cardLast4 }
       }
     });
