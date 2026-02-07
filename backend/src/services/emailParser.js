@@ -689,10 +689,11 @@ class EmailParser {
           const subject = parsed.subject || '';
           const fullText = `${subject} ${body}`;
 
-          const cardLast4 = this.extractCardLast4(fullText);
+          const cardInfo = this.extractCardInfo(fullText);
+          const cardLast4 = cardInfo.last4;
 
           if (cardLast4) {
-            const card = await this.matchCardToUser(userId, cardLast4, fullText);
+            const card = await this.matchCardToUser(userId, cardLast4, fullText, cardInfo.networkHint);
 
             if (card) {
               // Get the purchase to use its purchaseDate for protection calculation
