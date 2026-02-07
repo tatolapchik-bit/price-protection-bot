@@ -298,7 +298,7 @@ export default function ClaimDetail() {
                 <div className="mt-4">
                   <h4 className="text-sm font-medium text-gray-700 mb-2">Timeline</h4>
                   <div className="space-y-2">
-                    {proof.statusHistory.map((entry, idx) => (
+                    {proof.statusHistory.filter(entry => entry.status !== 'ERROR').map((entry, idx) => (
                       <div key={idx} className="flex items-start gap-3 text-sm">
                         <div className="w-2 h-2 mt-1.5 rounded-full bg-indigo-400 flex-shrink-0" />
                         <div>
