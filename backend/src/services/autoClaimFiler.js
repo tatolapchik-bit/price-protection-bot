@@ -1,18 +1,19 @@
 /**
  * Auto Claim Filer Service
- * Files price protection claims via email using SendGrid.
+ * Files price protection claims via email using Gmail API (OAuth2).
+ * Falls back to SendGrid if Gmail is unavailable.
  * Generates proof: PDF documentation, price screenshot, email proof screenshot.
  *
  * Flow:
  *   1. Generate claim PDF
  *   2. Capture price screenshot (if product URL exists)
- *   3. Send claim email to card issuer via SendGrid
+ *   3. Send claim email to card issuer via Gmail API (or SendGrid fallback)
  *   4. Capture email proof screenshot (rendered HTML of the sent email)
  *   5. Update claim record with all proof data
  *   6. Notify user
  */
 
-const sgMail = require('@sendgrid/mail');
+const { google } = require('googleapis');
 const puppeteer = require('puppeteer');
 const { PrismaClient } = require('@prisma/client');
 const { v4: uuidv4 } = require('uuid');
@@ -23,9 +24,15 @@ const claimService = require('./claimService');
 
 const prisma = new PrismaClient();
 
-// Initialize SendGrid
-if (process.env.SENDGRID_API_KEY) {
-  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+// SendGrid is optional fallback
+let sgMail = null;
+try {
+  sgMail = require('@sendgrid/mail');
+  if (process.env.SENDGRID_API_KEY) {
+    sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+  }
+} catch (e) {
+  logger.info('SendGrid not available, using Gmail API only');
 }
 
 // ── Issuer claim email addresses ─────────────────────────────────────────────
@@ -160,11 +167,128 @@ Submitted automatically via PriceDropped`;
   return { subject, body };
 }
 
-// ── Core: Send claim email via SendGrid ──────────────────────────────────────
+// ── Helper: Get Gmail client for a user ──────────────────────────────────────
+
+async function getGmailClient(userId) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      gmailAccessToken: true,
+      gmailRefreshToken: true,
+    }
+  });
+
+  if (!user?.gmailAccessToken) {
+    throw new Error('Gmail not connected for this user');
+  }
+
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URI
+  );
+
+  oauth2Client.setCredentials({
+    access_token: user.gmailAccessToken,
+    refresh_token: user.gmailRefreshToken,
+  });
+
+  // Handle token refresh
+  oauth2Client.on('tokens', async (tokens) => {
+    if (tokens.access_token) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { gmailAccessToken: tokens.access_token }
+      });
+    }
+  });
+
+  return google.gmail({ version: 'v1', auth: oauth2Client });
+}
+
+// ── Core: Send claim email via Gmail API ─────────────────────────────────────
+
+async function sendClaimEmailViaGmail(userId, fromEmail, toEmail, subject, body, attachments) {
+  const gmail = await getGmailClient(userId);
+
+  // Build MIME message with attachments
+  const boundary = `boundary_${uuidv4().replace(/-/g, '')}`;
+  const htmlBody = body.replace(/\n/g, '<br>');
+
+  let mimeMessage = [
+    `From: ${fromEmail}`,
+    `To: ${toEmail}`,
+    `Subject: ${subject}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    ``,
+    `--${boundary}`,
+    `Content-Type: multipart/alternative; boundary="alt_${boundary}"`,
+    ``,
+    `--alt_${boundary}`,
+    `Content-Type: text/plain; charset=UTF-8`,
+    ``,
+    body,
+    ``,
+    `--alt_${boundary}`,
+    `Content-Type: text/html; charset=UTF-8`,
+    ``,
+    htmlBody,
+    ``,
+    `--alt_${boundary}--`,
+  ].join('\r\n');
+
+  // Add attachments
+  for (const att of attachments) {
+    try {
+      const fileContent = await fs.readFile(att.filePath);
+      const base64Content = fileContent.toString('base64');
+      const filename = att.displayName || path.basename(att.filePath);
+      const mimeType = att.mimeType || 'application/octet-stream';
+
+      mimeMessage += [
+        ``,
+        `--${boundary}`,
+        `Content-Type: ${mimeType}; name="${filename}"`,
+        `Content-Disposition: attachment; filename="${filename}"`,
+        `Content-Transfer-Encoding: base64`,
+        ``,
+        base64Content,
+      ].join('\r\n');
+    } catch (err) {
+      logger.warn(`Could not attach file ${att.filePath}: ${err.message}`);
+    }
+  }
+
+  mimeMessage += `\r\n--${boundary}--`;
+
+  // Encode to base64url
+  const encodedMessage = Buffer.from(mimeMessage)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  // Send via Gmail API
+  const response = await gmail.users.messages.send({
+    userId: 'me',
+    requestBody: {
+      raw: encodedMessage,
+    },
+  });
+
+  return {
+    messageId: response.data.id || `gmail-${uuidv4()}`,
+    threadId: response.data.threadId,
+    statusCode: 200,
+  };
+}
+
+// ── Core: Send claim email via SendGrid (fallback) ───────────────────────────
 
 async function sendClaimEmailViaSendGrid(toEmail, subject, body, attachments, replyTo) {
-  if (!process.env.SENDGRID_API_KEY) {
-    throw new Error('SENDGRID_API_KEY is not configured. Cannot send claim email.');
+  if (!process.env.SENDGRID_API_KEY || !sgMail) {
+    throw new Error('SENDGRID_API_KEY is not configured. Cannot send claim email via SendGrid.');
   }
 
   const sgAttachments = [];
@@ -320,19 +444,39 @@ async function autoFileClaim(claimId) {
       logger.info('[AutoFile] No product URL — skipping price screenshot');
     }
 
-    // ── Step 3: Build & send claim email via SendGrid ────────────────────────
+    // ── Step 3: Build & send claim email (Gmail primary, SendGrid fallback) ─
     const { subject, body } = buildEmailBody(claim);
     const sentAt = new Date();
+    let emailResult;
+    let sendMethod = 'gmail';
 
     logger.info(`[AutoFile] Sending claim email to ${toEmail}...`);
-    const emailResult = await sendClaimEmailViaSendGrid(
-      toEmail,
-      subject,
-      body,
-      attachments,
-      claim.user?.email   // reply-to = user's email
-    );
-    logger.info(`[AutoFile] Email sent! messageId=${emailResult.messageId}`);
+
+    // Try Gmail API first (uses user's own email — more legitimate for claims)
+    try {
+      emailResult = await sendClaimEmailViaGmail(
+        claim.userId,
+        claim.user?.email || 'noreply@pricedropped.app',
+        toEmail,
+        subject,
+        body,
+        attachments
+      );
+      logger.info(`[AutoFile] Email sent via Gmail! messageId=${emailResult.messageId}`);
+    } catch (gmailError) {
+      logger.warn(`[AutoFile] Gmail send failed: ${gmailError.message}. Trying SendGrid...`);
+
+      // Fallback to SendGrid
+      sendMethod = 'sendgrid';
+      emailResult = await sendClaimEmailViaSendGrid(
+        toEmail,
+        subject,
+        body,
+        attachments,
+        claim.user?.email
+      );
+      logger.info(`[AutoFile] Email sent via SendGrid! messageId=${emailResult.messageId}`);
+    }
 
     // ── Step 4: Capture email proof screenshot ───────────────────────────────
     logger.info('[AutoFile] Capturing email proof screenshot...');
@@ -347,7 +491,7 @@ async function autoFileClaim(claimId) {
     statusHistory.push({
       status:    'EMAIL_SENT',
       timestamp: sentAt.toISOString(),
-      notes:     `Claim email sent to ${toEmail} via SendGrid (${emailResult.messageId})`,
+      notes:     `Claim email sent to ${toEmail} via ${sendMethod} (${emailResult.messageId})`,
     });
 
     await prisma.claim.update({
