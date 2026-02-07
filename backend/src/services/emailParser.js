@@ -284,9 +284,10 @@ class EmailParser {
     // Extract product name (basic approach - can be enhanced)
     let productName = this.extractProductName(body, retailer);
 
-    // Extract card last 4 digits and try to match to user's cards (or auto-create)
-    const cardLast4 = this.extractCardLast4(body);
-    const matchedCard = await this.matchCardToUser(userId, cardLast4, body);
+    // Extract card info (last 4 digits + network hint) and try to match to user's cards
+    const cardInfo = this.extractCardInfo(body);
+    const cardLast4 = cardInfo.last4;
+    const matchedCard = await this.matchCardToUser(userId, cardLast4, body, cardInfo.networkHint);
 
     // Extract product URL for price monitoring
     const productUrl = this.extractProductUrl(body, retailer, retailerConfig);
@@ -385,18 +386,45 @@ class EmailParser {
   }
 
   // Extract last 4 digits of card from email body
-  extractCardLast4(body) {
+  // Returns { last4, networkHint } where networkHint is the network found near the digits
+  extractCardInfo(body) {
+    // First try patterns that ALSO capture the network name (higher confidence)
+    const networkCardPatterns = [
+      // "Visa ending in 1234", "Mastercard ****1234", "American Express x1234"
+      /(?:(visa|mastercard|master\s*card|amex|american\s*express|discover|chase|citi|capital\s*one|wells\s*fargo)[^0-9]*(?:ending|end|x+|[*]+)[\s:]*(\d{4}))/i,
+      // "card ending in 1234 (Visa)"
+      /(?:card|payment)[^0-9]*(?:ending|end|x+|[*]+)[\s:]*(\d{4})[^0-9]*\((visa|mastercard|amex|american\s*express|discover)\)/i,
+    ];
+
+    for (const pattern of networkCardPatterns) {
+      const match = body.match(pattern);
+      if (match) {
+        // Groups might be in different order depending on pattern
+        const digits = match[2] || match[1];
+        const networkStr = match[1] || match[2];
+        if (/^\d{4}$/.test(digits)) {
+          const network = /^\d+$/.test(networkStr) ? null : networkStr;
+          return { last4: digits, networkHint: network?.toLowerCase().replace(/\s+/g, '') || null };
+        }
+      }
+    }
+
+    // Fall back to digit-only patterns
     for (const pattern of CARD_LAST4_PATTERNS) {
       const match = body.match(pattern);
       if (match && match[1]) {
         const last4 = match[1];
-        // Validate it's 4 digits
         if (/^\d{4}$/.test(last4)) {
-          return last4;
+          return { last4, networkHint: null };
         }
       }
     }
-    return null;
+    return { last4: null, networkHint: null };
+  }
+
+  // Backward-compatible wrapper
+  extractCardLast4(body) {
+    return this.extractCardInfo(body).last4;
   }
 
   // Extract product URL from email
@@ -459,17 +487,71 @@ class EmailParser {
     return null;
   }
 
-  // Detect card network from email body
-  detectCardNetwork(body) {
-    for (const [network, patterns] of Object.entries(CARD_NETWORK_PATTERNS)) {
-      for (const pattern of patterns) {
-        if (pattern.test(body)) {
-          logger.info(`Detected card network: ${network}`);
-          return network;
+  // Detect card network from email body using PROXIMITY matching
+  // Only detects network when it appears near the card/payment section, not random mentions
+  detectCardNetwork(body, cardLast4 = null) {
+    // Strategy 1: Look for network name directly adjacent to card last-4 digits
+    // e.g., "Visa ending in 1234" or "Mastercard ****5678"
+    if (cardLast4) {
+      const proximityPatterns = [
+        // "Visa ending in 1234", "Mastercard ****1234", "Amex x1234"
+        new RegExp(`(visa|mastercard|master\\s*card|amex|american\\s*express|discover|chase|citi|citibank|capital\\s*one|wells\\s*fargo)[^\\n]{0,30}${cardLast4}`, 'i'),
+        // "1234 (Visa)", "****1234 Mastercard"
+        new RegExp(`${cardLast4}[^\\n]{0,30}(visa|mastercard|master\\s*card|amex|american\\s*express|discover|chase|citi|citibank|capital\\s*one|wells\\s*fargo)`, 'i'),
+      ];
+
+      for (const pattern of proximityPatterns) {
+        const match = body.match(pattern);
+        if (match) {
+          const networkStr = (match[1] || '').toLowerCase().replace(/\s+/g, '');
+          const mapped = this._mapNetworkString(networkStr);
+          if (mapped) {
+            logger.info(`Detected card network via proximity to last4: ${mapped}`);
+            return mapped;
+          }
         }
       }
     }
+
+    // Strategy 2: Look for network in payment/card-specific context lines only
+    // Split body into lines, only search lines that mention payment/card/charged
+    const paymentLines = body.split(/[\n\r]+/).filter(line =>
+      /(?:card|payment|charged|ending|credit|debit|paid|billing)/i.test(line)
+    );
+
+    if (paymentLines.length > 0) {
+      const paymentContext = paymentLines.join(' ');
+      for (const [network, patterns] of Object.entries(CARD_NETWORK_PATTERNS)) {
+        for (const pattern of patterns) {
+          if (pattern.test(paymentContext)) {
+            logger.info(`Detected card network from payment context: ${network}`);
+            return network;
+          }
+        }
+      }
+    }
+
+    // Strategy 3: DO NOT fall back to searching the entire body
+    // This prevents false positives from "We accept Visa, Mastercard..." footers
+    logger.info('Could not detect card network from payment context');
     return null;
+  }
+
+  // Map network string variants to canonical names
+  _mapNetworkString(str) {
+    const map = {
+      'visa': 'visa',
+      'mastercard': 'mastercard',
+      'amex': 'amex',
+      'americanexpress': 'amex',
+      'discover': 'discover',
+      'chase': 'chase',
+      'citi': 'citi',
+      'citibank': 'citi',
+      'capitalone': 'capitalone',
+      'wellsfargo': 'wellsfargo',
+    };
+    return map[str] || null;
   }
 
   // Get protection days based on card network
@@ -478,7 +560,7 @@ class EmailParser {
   }
 
   // Match card last 4 to user's existing cards OR auto-create if not found
-  async matchCardToUser(userId, cardLast4, body = '') {
+  async matchCardToUser(userId, cardLast4, body = '', networkHint = null) {
     if (!cardLast4) return null;
 
     // Get user's cards
@@ -506,8 +588,10 @@ class EmailParser {
     // No matching card found - AUTO-CREATE one!
     logger.info(`No card found with last 4: ${cardLast4}. Auto-creating card...`);
 
-    // Detect card network/issuer from email body
-    const detectedNetwork = this.detectCardNetwork(body);
+    // Use the network hint from extraction first, then try proximity detection
+    const detectedNetwork = networkHint
+      ? this._mapNetworkString(networkHint) || this.detectCardNetwork(body, cardLast4)
+      : this.detectCardNetwork(body, cardLast4);
     const protectionDays = this.getProtectionDays(detectedNetwork);
 
     // Determine network and issuer

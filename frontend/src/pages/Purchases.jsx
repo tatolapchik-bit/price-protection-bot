@@ -1,14 +1,17 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   PlusIcon,
   ShoppingBagIcon,
   FunnelIcon,
-  MagnifyingGlassIcon
+  MagnifyingGlassIcon,
+  CreditCardIcon,
+  ExclamationTriangleIcon
 } from '@heroicons/react/24/outline';
-import { purchasesAPI } from '../services/api';
+import { purchasesAPI, cardsAPI } from '../services/api';
 import { format } from 'date-fns';
+import toast from 'react-hot-toast';
 
 const statusColors = {
   MONITORING: 'badge-blue',
@@ -34,6 +37,8 @@ export default function Purchases() {
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
+  const [linkingPurchaseId, setLinkingPurchaseId] = useState(null);
+  const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery({
     queryKey: ['purchases', filter, page],
@@ -44,7 +49,23 @@ export default function Purchases() {
     })
   });
 
+  const { data: cardsData } = useQuery({
+    queryKey: ['cards'],
+    queryFn: () => cardsAPI.getAll()
+  });
+
+  const linkCardMutation = useMutation({
+    mutationFn: ({ purchaseId, creditCardId }) => purchasesAPI.linkCard(purchaseId, creditCardId),
+    onSuccess: () => {
+      toast.success('Card linked! Auto-claim is now enabled for this purchase.');
+      queryClient.invalidateQueries(['purchases']);
+      setLinkingPurchaseId(null);
+    },
+    onError: () => toast.error('Failed to link card')
+  });
+
   const purchases = data?.data?.purchases || [];
+  const cards = cardsData?.data || [];
   const pagination = data?.data?.pagination;
 
   const filteredPurchases = search
@@ -123,11 +144,24 @@ export default function Purchases() {
         </div>
       ) : (
         <div className="card overflow-hidden">
+          {/* Alert for purchases without cards */}
+          {purchases.some(p => !p.creditCardId && !['EXPIRED', 'CLAIM_FILED', 'CLAIM_APPROVED'].includes(p.status)) && (
+            <div className="bg-amber-50 border-b border-amber-200 px-6 py-3 flex items-center gap-2">
+              <ExclamationTriangleIcon className="h-5 w-5 text-amber-500 flex-shrink-0" />
+              <p className="text-sm text-amber-800">
+                Some purchases don't have a credit card linked. Link a card to enable automatic claim filing when prices drop.
+              </p>
+            </div>
+          )}
+
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Product
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Card
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Purchase Price
@@ -149,8 +183,9 @@ export default function Purchases() {
             <tbody className="bg-white divide-y divide-gray-200">
               {filteredPurchases.map((purchase) => {
                 const savings = purchase.purchasePrice - (purchase.lowestPrice || purchase.purchasePrice);
+                const needsCard = !purchase.creditCardId && !['EXPIRED', 'CLAIM_FILED', 'CLAIM_APPROVED'].includes(purchase.status);
                 return (
-                  <tr key={purchase.id} className="hover:bg-gray-50">
+                  <tr key={purchase.id} className={`hover:bg-gray-50 ${needsCard ? 'bg-amber-50/30' : ''}`}>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <Link to={`/purchases/${purchase.id}`} className="flex items-center">
                         {purchase.imageUrl ? (
@@ -171,6 +206,47 @@ export default function Purchases() {
                           <div className="text-sm text-gray-500">{purchase.retailer}</div>
                         </div>
                       </Link>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      {purchase.creditCard ? (
+                        <div className="flex items-center text-sm text-gray-700">
+                          <CreditCardIcon className="h-4 w-4 mr-1 text-gray-400" />
+                          <span>{purchase.creditCard.issuer || purchase.creditCard.network} ...{purchase.creditCard.lastFour}</span>
+                        </div>
+                      ) : linkingPurchaseId === purchase.id ? (
+                        <select
+                          className="input text-xs py-1 px-2 w-36"
+                          autoFocus
+                          defaultValue=""
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              linkCardMutation.mutate({ purchaseId: purchase.id, creditCardId: e.target.value });
+                            }
+                          }}
+                          onBlur={() => setLinkingPurchaseId(null)}
+                        >
+                          <option value="">Select card...</option>
+                          {cards.map(card => (
+                            <option key={card.id} value={card.id}>
+                              {card.issuer || card.network} ...{card.lastFour}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            if (cards.length === 0) {
+                              toast('Add a credit card first in Credit Cards page', { icon: 'i' });
+                            } else {
+                              setLinkingPurchaseId(purchase.id);
+                            }
+                          }}
+                          className="text-xs text-amber-600 hover:text-amber-800 font-medium flex items-center gap-1"
+                        >
+                          <ExclamationTriangleIcon className="h-3.5 w-3.5" />
+                          Link Card
+                        </button>
+                      )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                       ${purchase.purchasePrice.toFixed(2)}
@@ -195,7 +271,7 @@ export default function Purchases() {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {purchase.protectionEnds
                         ? format(new Date(purchase.protectionEnds), 'MMM d, yyyy')
-                        : '-'}
+                        : <span className="text-amber-500 text-xs">Link card first</span>}
                     </td>
                   </tr>
                 );

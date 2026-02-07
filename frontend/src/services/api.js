@@ -54,7 +54,8 @@ export const purchasesAPI = {
   delete: (id) => api.delete(`/purchases/${id}`),
   checkPrice: (id) => api.post(`/purchases/${id}/check-price`),
   getPriceHistory: (id) => api.get(`/purchases/${id}/price-history`),
-  getStats: () => api.get('/purchases/stats/dashboard')
+  getStats: () => api.get('/purchases/stats/dashboard'),
+  linkCard: (id, creditCardId) => api.patch(`/purchases/${id}`, { creditCardId })
 };
 
 export const claimsAPI = {
