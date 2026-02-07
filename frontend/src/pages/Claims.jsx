@@ -11,23 +11,29 @@ import { format } from 'date-fns';
 const statusColors = {
   DRAFT: 'badge-gray',
   READY_TO_FILE: 'badge-blue',
+  PENDING: 'badge-yellow',
+  EMAIL_SENT: 'badge-blue',
   FILED: 'badge-blue',
   PENDING_REVIEW: 'badge-yellow',
   ADDITIONAL_INFO_NEEDED: 'badge-yellow',
   APPROVED: 'badge-green',
   DENIED: 'badge-red',
-  EXPIRED: 'badge-gray'
+  EXPIRED: 'badge-gray',
+  MONEY_RECEIVED: 'badge-green'
 };
 
 const statusLabels = {
   DRAFT: 'Draft',
   READY_TO_FILE: 'Ready to File',
+  PENDING: 'Pending',
+  EMAIL_SENT: 'Email Sent',
   FILED: 'Filed',
   PENDING_REVIEW: 'Pending Review',
   ADDITIONAL_INFO_NEEDED: 'Info Needed',
   APPROVED: 'Approved',
   DENIED: 'Denied',
-  EXPIRED: 'Expired'
+  EXPIRED: 'Expired',
+  MONEY_RECEIVED: 'Money Received'
 };
 
 export default function Claims() {
@@ -48,9 +54,9 @@ export default function Claims() {
 
   // Calculate totals
   const totals = claims.reduce((acc, claim) => {
-    if (claim.status === 'APPROVED') {
+    if (['APPROVED', 'MONEY_RECEIVED'].includes(claim.status)) {
       acc.approved += claim.approvedAmount || claim.priceDifference;
-    } else if (['FILED', 'PENDING_REVIEW'].includes(claim.status)) {
+    } else if (['EMAIL_SENT', 'FILED', 'PENDING_REVIEW'].includes(claim.status)) {
       acc.pending += claim.priceDifference;
     }
     return acc;
@@ -96,6 +102,7 @@ export default function Claims() {
             <option value="all">All Status</option>
             <option value="DRAFT">Draft</option>
             <option value="READY_TO_FILE">Ready to File</option>
+            <option value="EMAIL_SENT">Email Sent</option>
             <option value="FILED">Filed</option>
             <option value="PENDING_REVIEW">Pending Review</option>
             <option value="APPROVED">Approved</option>

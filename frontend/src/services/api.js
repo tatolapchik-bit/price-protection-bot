@@ -66,7 +66,9 @@ export const claimsAPI = {
   autoFile: (id) => api.post(`/claims/${id}/auto-file`),
   updateStatus: (id, data) => api.patch(`/claims/${id}/status`, data),
   delete: (id) => api.delete(`/claims/${id}`),
-  getInstructions: (id) => api.get(`/claims/${id}/instructions`)
+  getInstructions: (id) => api.get(`/claims/${id}/instructions`),
+  getProof: (id) => api.get(`/claims/${id}/proof`),
+  getProofFileUrl: (id, type) => `${api.defaults.baseURL}/claims/${id}/proof/${type}`,
 };
 
 export const cardsAPI = {

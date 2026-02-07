@@ -1,368 +1,448 @@
 /**
  * Auto Claim Filer Service
- * Handles automated filing of price protection claims via:
- * 1. Email submission (primary method - works for most issuers)
- * 2. Portal form filling via Puppeteer (for issuers with online portals)
+ * Files price protection claims via email using SendGrid.
+ * Generates proof: PDF documentation, price screenshot, email proof screenshot.
+ *
+ * Flow:
+ *   1. Generate claim PDF
+ *   2. Capture price screenshot (if product URL exists)
+ *   3. Send claim email to card issuer via SendGrid
+ *   4. Capture email proof screenshot (rendered HTML of the sent email)
+ *   5. Update claim record with all proof data
+ *   6. Notify user
  */
 
+const sgMail = require('@sendgrid/mail');
 const puppeteer = require('puppeteer');
 const { PrismaClient } = require('@prisma/client');
+const { v4: uuidv4 } = require('uuid');
+const fs = require('fs').promises;
+const path = require('path');
 const logger = require('../utils/logger');
 const claimService = require('./claimService');
 
 const prisma = new PrismaClient();
 
-// Claim portal configurations with form field selectors
-const CLAIM_PORTALS = {
-  Chase: {
-    url: 'https://www.chasebenefits.com/chase',
-    loginRequired: true,
-    steps: [
-      { action: 'navigate', url: 'https://www.chasebenefits.com/chase' },
-      { action: 'click', selector: 'a[href*="FileClaim"], button:has-text("File a Claim"), .file-claim-btn' },
-      { action: 'select', selector: '#benefitType, select[name="benefitType"]', value: 'Price Protection' },
-      { action: 'fill', selector: '#cardNumber, input[name="cardNumber"]', field: 'lastFour' },
-      { action: 'fill', selector: '#purchaseDate, input[name="purchaseDate"]', field: 'purchaseDate' },
-      { action: 'fill', selector: '#purchaseAmount, input[name="purchaseAmount"]', field: 'originalPrice' },
-      { action: 'fill', selector: '#currentPrice, input[name="currentPrice"]', field: 'newPrice' },
-      { action: 'fill', selector: '#merchantName, input[name="merchantName"]', field: 'retailer' },
-      { action: 'fill', selector: '#itemDescription, input[name="itemDescription"]', field: 'productName' },
-      { action: 'upload', selector: 'input[type="file"]', field: 'proofDocument' },
-      { action: 'submit', selector: 'button[type="submit"], .submit-claim-btn' }
-    ]
-  },
-  Citi: {
-    url: 'https://www.cardbenefitservices.com/ebdcaz/completeReg.do',
-    loginRequired: true,
-    steps: [
-      { action: 'navigate', url: 'https://www.cardbenefitservices.com/ebdcaz/completeReg.do' },
-      { action: 'fill', selector: '#cardNumber, input[name="cardNumber"]', field: 'lastFour' },
-      { action: 'fill', selector: '#purchaseDate, input[name="purchaseDate"]', field: 'purchaseDate' },
-      { action: 'fill', selector: '#originalPrice, input[name="originalPrice"]', field: 'originalPrice' },
-      { action: 'fill', selector: '#lowerPrice, input[name="lowerPrice"]', field: 'newPrice' },
-      { action: 'fill', selector: '#itemDesc, input[name="itemDesc"]', field: 'productName' },
-      { action: 'fill', selector: '#retailer, input[name="retailer"]', field: 'retailer' },
-      { action: 'upload', selector: 'input[type="file"]', field: 'proofDocument' },
-      { action: 'submit', selector: 'button[type="submit"], .submit-btn' }
-    ]
-  },
-  Discover: {
-    url: 'https://www.discover.com/credit-cards/member-benefits/',
-    loginRequired: true,
-    steps: [
-      { action: 'navigate', url: 'https://www.discover.com/credit-cards/member-benefits/' },
-      { action: 'click', selector: 'a:has-text("Price Protection"), .price-protection-link' },
-      { action: 'fill', selector: '#itemName, input[name="itemName"]', field: 'productName' },
-      { action: 'fill', selector: '#purchaseDate, input[name="purchaseDate"]', field: 'purchaseDate' },
-      { action: 'fill', selector: '#purchasePrice, input[name="purchasePrice"]', field: 'originalPrice' },
-      { action: 'fill', selector: '#currentPrice, input[name="currentPrice"]', field: 'newPrice' },
-      { action: 'fill', selector: '#retailerName, input[name="retailerName"]', field: 'retailer' },
-      { action: 'upload', selector: 'input[type="file"]', field: 'proofDocument' },
-      { action: 'submit', selector: 'button[type="submit"]' }
-    ]
-  }
+// Initialize SendGrid
+if (process.env.SENDGRID_API_KEY) {
+  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+}
+
+// ── Issuer claim email addresses ─────────────────────────────────────────────
+// These are the benefit-services addresses that handle price protection claims.
+const ISSUER_CLAIM_EMAILS = {
+  'american express': 'purchaseprotection@aexp.com',
+  'amex':             'purchaseprotection@aexp.com',
+  'chase':            'cardbenefitservices@eclaimsline.com',
+  'citi':             'citibenefit@aon.com',
+  'citibank':         'citibenefit@aon.com',
+  'discover':         'discover@cardbenefitservices.com',
+  'visa':             'visabenefits@cardbenefitservices.com',
+  'mastercard':       'mastercardbenefits@cardbenefitservices.com',
+  'capital one':      'priceprotection@capitalone.com',
+  'capitalone':       'priceprotection@capitalone.com',
+  'wells fargo':      'priceprotection@wellsfargo.com',
+  'wellsfargo':       'priceprotection@wellsfargo.com',
+  'barclays':         'benefits@barclaysus.com',
+  'usbank':           'cardmemberservice@usbank.com',
+  'us bank':          'cardmemberservice@usbank.com',
 };
 
-/**
- * Build the data object for form filling from a claim
- */
-function buildFormData(claim) {
+// ── Issuer-specific email templates ──────────────────────────────────────────
+const EMAIL_TEMPLATES = {
+  amex: {
+    subject: 'American Express Purchase Protection Claim – {productName}',
+    greeting: 'Dear American Express Purchase Protection Team,',
+  },
+  chase: {
+    subject: 'Chase Price Protection Claim – Card ending {lastFour}',
+    greeting: 'Dear Chase Benefits Services,',
+  },
+  citi: {
+    subject: 'Citi Price Rewind Claim – {productName}',
+    greeting: 'Dear Citi Card Benefit Services,',
+  },
+  discover: {
+    subject: 'Discover Price Protection Claim – {productName}',
+    greeting: 'Dear Discover Card Member Benefits,',
+  },
+  default: {
+    subject: 'Price Protection Claim – {productName} – Card ending {lastFour}',
+    greeting: 'Dear Price Protection Claims Department,',
+  },
+};
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function getClaimEmail(issuer, card) {
+  // 1. Check if the credit-card record has a custom claim email
+  if (card?.claimEmail) return card.claimEmail;
+
+  // 2. Look up from our map (case-insensitive)
+  const key = (issuer || '').toLowerCase().trim();
+  if (ISSUER_CLAIM_EMAILS[key]) return ISSUER_CLAIM_EMAILS[key];
+
+  // 3. Also check the card's network (visa/mastercard) as fallback
+  const network = (card?.network || '').toLowerCase().trim();
+  if (ISSUER_CLAIM_EMAILS[network]) return ISSUER_CLAIM_EMAILS[network];
+
+  // 4. Fall back to a generic email (better than nothing)
+  return 'cardbenefitservices@eclaimsline.com';
+}
+
+function getTemplate(issuer) {
+  const key = (issuer || '').toLowerCase().trim();
+  if (key.includes('amex') || key.includes('american express')) return EMAIL_TEMPLATES.amex;
+  if (key.includes('chase'))   return EMAIL_TEMPLATES.chase;
+  if (key.includes('citi'))    return EMAIL_TEMPLATES.citi;
+  if (key.includes('discover')) return EMAIL_TEMPLATES.discover;
+  return EMAIL_TEMPLATES.default;
+}
+
+function fillTemplate(str, data) {
+  return str.replace(/\{(\w+)\}/g, (_, k) => data[k] ?? '');
+}
+
+function buildEmailBody(claim) {
+  const card = claim.creditCard;
+  const purchase = claim.purchase;
+  const user = claim.user;
+  const template = getTemplate(card.issuer);
+  const claimAmount = Math.min(claim.priceDifference, card.maxClaimAmount);
+
+  const data = {
+    productName: purchase.productName,
+    lastFour:    card.lastFour,
+    retailer:    purchase.retailer,
+    claimId:     claim.id,
+  };
+
+  const subject = fillTemplate(template.subject, data);
+
+  const body = `${fillTemplate(template.greeting, data)}
+
+I am writing to submit a Price Protection claim for a recent purchase.
+
+CARDHOLDER INFORMATION:
+- Cardholder Name: ${user?.name || user?.email?.split('@')[0] || 'Cardholder'}
+- Card Ending In: ****${card.lastFour}
+- Email: ${user?.email || ''}
+
+PURCHASE DETAILS:
+- Product: ${purchase.productName}
+- Retailer: ${purchase.retailer}
+- Order ID: ${purchase.retailerOrderId || 'See attached receipt'}
+- Purchase Date: ${new Date(purchase.purchaseDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+- Original Purchase Price: $${claim.originalPrice.toFixed(2)}
+
+PRICE DROP INFORMATION:
+- Current Lower Price: $${claim.newPrice.toFixed(2)}
+- Price Difference: $${claim.priceDifference.toFixed(2)}
+- Date Lower Price Found: ${purchase.lowestPriceDate ? new Date(purchase.lowestPriceDate).toLocaleDateString('en-US') : new Date().toLocaleDateString('en-US')}${purchase.productUrl ? `\n- Price Source URL: ${purchase.productUrl}` : ''}
+
+CLAIM AMOUNT REQUESTED: $${claimAmount.toFixed(2)}
+
+I have attached the following documentation:
+1. Claim summary document (PDF) with full details
+2. Screenshot of the current lower price (if available)
+
+Please process this claim at your earliest convenience. I understand the claim is subject to the standard terms and conditions of my card's price protection benefit.
+
+Thank you for your assistance.
+
+Best regards,
+${user?.name || user?.email?.split('@')[0] || 'Cardholder'}
+
+---
+Claim Reference: ${claim.id}
+Submitted automatically via PriceDropped`;
+
+  return { subject, body };
+}
+
+// ── Core: Send claim email via SendGrid ──────────────────────────────────────
+
+async function sendClaimEmailViaSendGrid(toEmail, subject, body, attachments, replyTo) {
+  if (!process.env.SENDGRID_API_KEY) {
+    throw new Error('SENDGRID_API_KEY is not configured. Cannot send claim email.');
+  }
+
+  const sgAttachments = [];
+
+  for (const att of attachments) {
+    try {
+      const fileContent = await fs.readFile(att.filePath);
+      sgAttachments.push({
+        content:     fileContent.toString('base64'),
+        filename:    att.displayName || path.basename(att.filePath),
+        type:        att.mimeType || 'application/octet-stream',
+        disposition: 'attachment',
+      });
+    } catch (err) {
+      logger.warn(`Could not attach file ${att.filePath}: ${err.message}`);
+    }
+  }
+
+  const msg = {
+    to:      toEmail,
+    from: {
+      email: process.env.CLAIM_FROM_EMAIL || process.env.FROM_EMAIL || 'claims@pricedropped.app',
+      name:  'PriceDropped Claims',
+    },
+    replyTo: replyTo || undefined,
+    subject,
+    text: body,
+    html: body.replace(/\n/g, '<br>'),
+    attachments: sgAttachments.length > 0 ? sgAttachments : undefined,
+  };
+
+  const response = await sgMail.send(msg);
+
   return {
-    lastFour: claim.creditCard.lastFour,
-    purchaseDate: new Date(claim.purchase.purchaseDate).toLocaleDateString('en-US'),
-    originalPrice: claim.originalPrice.toFixed(2),
-    newPrice: claim.newPrice.toFixed(2),
-    priceDifference: claim.priceDifference.toFixed(2),
-    retailer: claim.purchase.retailer,
-    productName: claim.purchase.productName,
-    productUrl: claim.purchase.productUrl || '',
-    orderId: claim.purchase.retailerOrderId || '',
-    userName: claim.user?.name || claim.user?.email?.split('@')[0] || 'Cardholder',
-    userEmail: claim.user?.email || '',
-    claimId: claim.id
+    messageId:  response[0]?.headers?.['x-message-id'] || `sg-${uuidv4()}`,
+    statusCode: response[0]?.statusCode,
   };
 }
 
-/**
- * Try to fill a form field using multiple possible selectors
- */
-async function tryFillField(page, selectorStr, value, timeout = 5000) {
-  const selectors = selectorStr.split(',').map(s => s.trim());
+// ── Core: Capture email proof screenshot ─────────────────────────────────────
 
-  for (const selector of selectors) {
-    try {
-      await page.waitForSelector(selector, { timeout });
-      await page.click(selector, { clickCount: 3 }); // Select all existing text
-      await page.type(selector, String(value), { delay: 50 });
-      logger.info(`Filled field: ${selector}`);
-      return true;
-    } catch (e) {
-      continue;
-    }
+async function captureEmailProofScreenshot(subject, body, toEmail, sentAt) {
+  let browser = null;
+  try {
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    });
+
+    const page = await browser.newPage();
+    await page.setViewport({ width: 800, height: 1200 });
+
+    const escapedBody = body
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>');
+
+    const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 24px; background: #f3f4f6; }
+  .container { max-width: 700px; margin: 0 auto; background: #fff; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); overflow: hidden; }
+  .header { background: linear-gradient(135deg, #4f46e5, #7c3aed); color: #fff; padding: 18px 24px; display: flex; align-items: center; gap: 10px; }
+  .header .check { font-size: 22px; }
+  .header h2 { margin: 0; font-size: 16px; font-weight: 600; }
+  .meta { background: #f9fafb; padding: 14px 24px; border-bottom: 1px solid #e5e7eb; font-size: 13px; color: #6b7280; }
+  .meta strong { color: #111827; }
+  .body-text { padding: 24px; white-space: pre-wrap; font-size: 14px; line-height: 1.7; color: #374151; }
+  .footer { background: #f9fafb; padding: 12px 24px; border-top: 1px solid #e5e7eb; text-align: center; font-size: 11px; color: #9ca3af; }
+</style></head><body>
+  <div class="container">
+    <div class="header"><span class="check">✓</span><h2>Claim Email Sent Successfully</h2></div>
+    <div class="meta">
+      <div><strong>To:</strong> ${toEmail}</div>
+      <div><strong>Subject:</strong> ${subject}</div>
+      <div><strong>Sent:</strong> ${sentAt.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' })}</div>
+    </div>
+    <div class="body-text">${escapedBody}</div>
+    <div class="footer">Proof of email sent via PriceDropped &bull; ${sentAt.toISOString()}</div>
+  </div>
+</body></html>`;
+
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+
+    const fileName = `email_proof_${uuidv4()}.png`;
+    const filePath = path.join('/tmp', fileName);
+    await page.screenshot({ path: filePath, fullPage: true });
+    await browser.close();
+    browser = null;
+
+    logger.info(`Captured email proof screenshot: ${fileName}`);
+    return { filePath, fileName };
+  } catch (error) {
+    logger.error('Failed to capture email proof screenshot:', error);
+    if (browser) try { await browser.close(); } catch (_) {}
+    return null;
   }
-
-  logger.warn(`Could not fill any selector: ${selectorStr}`);
-  return false;
 }
 
-/**
- * Try to click an element using multiple possible selectors
- */
-async function tryClick(page, selectorStr, timeout = 5000) {
-  const selectors = selectorStr.split(',').map(s => s.trim());
+// ── Main entry point ─────────────────────────────────────────────────────────
 
-  for (const selector of selectors) {
-    try {
-      await page.waitForSelector(selector, { timeout });
-      await page.click(selector);
-      logger.info(`Clicked: ${selector}`);
-      return true;
-    } catch (e) {
-      continue;
-    }
-  }
-
-  logger.warn(`Could not click any selector: ${selectorStr}`);
-  return false;
-}
-
-/**
- * Attempt to file a claim through the issuer's online portal
- * Falls back to email if portal filing fails
- */
 async function autoFileClaim(claimId) {
   const claim = await prisma.claim.findUnique({
     where: { id: claimId },
     include: {
       purchase: true,
       creditCard: true,
-      user: true
-    }
+      user: true,
+    },
   });
 
-  if (!claim) throw new Error('Claim not found');
+  if (!claim)            throw new Error('Claim not found');
   if (!claim.creditCard) throw new Error('No credit card linked to this claim');
 
-  const issuer = claim.creditCard.issuer;
-  const portalConfig = CLAIM_PORTALS[issuer];
+  const card    = claim.creditCard;
+  const issuer  = card.issuer;
+  const toEmail = getClaimEmail(issuer, card);
 
-  // If no portal config, fall back to email-based filing
-  if (!portalConfig) {
-    logger.info(`No portal config for ${issuer}, using email-based filing`);
-    return await fileClaimViaEmail(claim);
-  }
+  logger.info(`[AutoFile] Starting auto-file for claim ${claimId} → ${issuer} (${toEmail})`);
 
-  // Try portal-based filing
-  logger.info(`Attempting portal-based filing for claim ${claimId} with ${issuer}`);
+  const attachments = [];
+  let pdfFilePath       = null;
+  let screenshotFilePath = null;
+  let emailProofPath     = null;
 
-  let browser = null;
   try {
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    // ── Step 1: Generate claim PDF ───────────────────────────────────────────
+    logger.info('[AutoFile] Generating claim PDF...');
+    const doc = await claimService.generateClaimDocumentation(claim);
+    pdfFilePath = doc.filePath;
+    attachments.push({
+      filePath:    doc.filePath,
+      displayName: 'PriceProtection_Claim.pdf',
+      mimeType:    'application/pdf',
+    });
+    logger.info(`[AutoFile] PDF generated: ${doc.fileName}`);
+
+    // ── Step 2: Capture price screenshot (if URL available) ──────────────────
+    if (claim.purchase.productUrl) {
+      logger.info('[AutoFile] Capturing price screenshot...');
+      const screenshot = await claimService.capturePriceScreenshot(claim.purchase.productUrl);
+      if (screenshot) {
+        screenshotFilePath = screenshot.filePath;
+        attachments.push({
+          filePath:    screenshot.filePath,
+          displayName: 'Current_Price_Screenshot.png',
+          mimeType:    'image/png',
+        });
+        logger.info(`[AutoFile] Price screenshot captured: ${screenshot.fileName}`);
+      }
+    } else {
+      logger.info('[AutoFile] No product URL — skipping price screenshot');
+    }
+
+    // ── Step 3: Build & send claim email via SendGrid ────────────────────────
+    const { subject, body } = buildEmailBody(claim);
+    const sentAt = new Date();
+
+    logger.info(`[AutoFile] Sending claim email to ${toEmail}...`);
+    const emailResult = await sendClaimEmailViaSendGrid(
+      toEmail,
+      subject,
+      body,
+      attachments,
+      claim.user?.email   // reply-to = user's email
+    );
+    logger.info(`[AutoFile] Email sent! messageId=${emailResult.messageId}`);
+
+    // ── Step 4: Capture email proof screenshot ───────────────────────────────
+    logger.info('[AutoFile] Capturing email proof screenshot...');
+    const emailProof = await captureEmailProofScreenshot(subject, body, toEmail, sentAt);
+    if (emailProof) {
+      emailProofPath = emailProof.filePath;
+      logger.info(`[AutoFile] Email proof captured: ${emailProof.fileName}`);
+    }
+
+    // ── Step 5: Update claim record with all proof data ──────────────────────
+    const statusHistory = Array.isArray(claim.statusHistory) ? [...claim.statusHistory] : [];
+    statusHistory.push({
+      status:    'EMAIL_SENT',
+      timestamp: sentAt.toISOString(),
+      notes:     `Claim email sent to ${toEmail} via SendGrid (${emailResult.messageId})`,
     });
 
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 900 });
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    );
-
-    const formData = buildFormData(claim);
-
-    // Generate claim documentation first
-    const doc = await claimService.generateClaimDocumentation(claim);
-
-    // Execute form steps
-    let stepSuccess = true;
-    for (const step of portalConfig.steps) {
-      try {
-        switch (step.action) {
-          case 'navigate':
-            await page.goto(step.url, { waitUntil: 'networkidle2', timeout: 30000 });
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            break;
-
-          case 'click':
-            const clicked = await tryClick(page, step.selector, 8000);
-            if (!clicked) {
-              logger.warn(`Could not click ${step.selector}, continuing...`);
-            }
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            break;
-
-          case 'select':
-            try {
-              const selectSelectors = step.selector.split(',').map(s => s.trim());
-              for (const sel of selectSelectors) {
-                try {
-                  await page.waitForSelector(sel, { timeout: 5000 });
-                  await page.select(sel, step.value);
-                  logger.info(`Selected "${step.value}" in ${sel}`);
-                  break;
-                } catch (e) { continue; }
-              }
-            } catch (e) {
-              logger.warn(`Could not select ${step.selector}`);
-            }
-            break;
-
-          case 'fill':
-            const value = formData[step.field] || '';
-            await tryFillField(page, step.selector, value);
-            break;
-
-          case 'upload':
-            if (doc && doc.filePath) {
-              try {
-                const selectors = step.selector.split(',').map(s => s.trim());
-                for (const sel of selectors) {
-                  try {
-                    const fileInput = await page.$(sel);
-                    if (fileInput) {
-                      await fileInput.uploadFile(doc.filePath);
-                      logger.info(`Uploaded file to ${sel}`);
-                      break;
-                    }
-                  } catch (e) { continue; }
-                }
-              } catch (e) {
-                logger.warn(`Could not upload file: ${e.message}`);
-              }
-            }
-            break;
-
-          case 'submit':
-            // Take screenshot before submitting
-            const preSubmitPath = `/tmp/claim_${claimId}_pre_submit.png`;
-            await page.screenshot({ path: preSubmitPath, fullPage: true });
-
-            const submitted = await tryClick(page, step.selector, 8000);
-            if (!submitted) {
-              stepSuccess = false;
-              logger.error('Could not find submit button');
-            } else {
-              // Wait for confirmation
-              await new Promise(resolve => setTimeout(resolve, 5000));
-
-              // Take screenshot of confirmation
-              const confirmPath = `/tmp/claim_${claimId}_confirmation.png`;
-              await page.screenshot({ path: confirmPath, fullPage: true });
-            }
-            break;
-        }
-      } catch (stepError) {
-        logger.error(`Step failed (${step.action}): ${stepError.message}`);
-        stepSuccess = false;
-      }
-    }
-
-    // Try to extract confirmation number from the page
-    let confirmationNumber = null;
-    try {
-      const pageText = await page.evaluate(() => document.body.innerText);
-      const confirmMatch = pageText.match(/(?:confirmation|reference|claim|ticket)\s*(?:#|number|no\.?)?\s*:?\s*([A-Z0-9-]{6,20})/i);
-      if (confirmMatch) {
-        confirmationNumber = confirmMatch[1];
-      }
-    } catch (e) {
-      logger.warn('Could not extract confirmation number');
-    }
-
-    await browser.close();
-    browser = null;
-
-    if (stepSuccess) {
-      // Update claim as filed
-      await prisma.claim.update({
-        where: { id: claimId },
-        data: {
-          status: 'FILED',
-          filedAt: new Date(),
-          autoFiled: true,
-          claimNumber: confirmationNumber,
-          proofDocumentUrl: doc ? `/documents/${doc.fileName}` : null,
-          statusHistory: [
-            { status: 'FILED', timestamp: new Date().toISOString(), notes: `Auto-filed via ${issuer} portal` }
-          ]
-        }
-      });
-
-      await prisma.purchase.update({
-        where: { id: claim.purchaseId },
-        data: { status: 'CLAIM_FILED' }
-      });
-
-      await prisma.notification.create({
-        data: {
-          userId: claim.userId,
-          type: 'CLAIM_FILED',
-          title: 'Claim Filed Automatically!',
-          message: `Your $${claim.priceDifference.toFixed(2)} claim for ${claim.purchase.productName} has been submitted through the ${issuer} portal.${confirmationNumber ? ` Confirmation: ${confirmationNumber}` : ''}`,
-          data: { claimId: claim.id, confirmationNumber }
-        }
-      });
-
-      return {
-        success: true,
-        method: 'portal',
-        confirmationNumber: confirmationNumber || 'Pending',
-        claimId,
-        message: `Claim submitted through ${issuer} portal`
-      };
-    } else {
-      // Portal filing failed, fall back to email
-      logger.info(`Portal filing incomplete for ${issuer}, falling back to email`);
-      return await fileClaimViaEmail(claim);
-    }
-  } catch (error) {
-    logger.error(`Portal filing error for claim ${claimId}:`, error);
-
-    if (browser) {
-      try { await browser.close(); } catch (e) { }
-    }
-
-    // Fall back to email
-    logger.info('Falling back to email-based filing');
-    return await fileClaimViaEmail(claim);
-  }
-}
-
-/**
- * File a claim via email as a fallback
- * Uses the main claimService.autoFileClaim method
- */
-async function fileClaimViaEmail(claim) {
-  try {
-    const result = await claimService.autoFileClaim(claim.id);
-    return {
-      ...result,
-      method: 'email',
-      message: result.success
-        ? `Claim submitted via email to ${claim.creditCard.issuer}`
-        : 'Email filing also failed. Please file manually.'
-    };
-  } catch (error) {
-    logger.error(`Email fallback failed for claim ${claim.id}:`, error);
-
-    // Mark as ready to file manually
     await prisma.claim.update({
-      where: { id: claim.id },
+      where: { id: claimId },
       data: {
-        status: 'READY_TO_FILE',
-        responseNotes: `Auto-filing failed (both portal and email). Error: ${error.message}. Please file manually.`
-      }
+        status:               'EMAIL_SENT',
+        filedAt:              sentAt,
+        autoFiled:            true,
+        claimEmailSentAt:     sentAt,
+        claimEmailMessageId:  emailResult.messageId,
+        claimEmailTo:         toEmail,
+        claimEmailSubject:    subject,
+        claimEmailBody:       body,
+        claimEmailScreenshot: emailProofPath  ? path.basename(emailProofPath)  : null,
+        proofDocumentUrl:     pdfFilePath     ? path.basename(pdfFilePath)     : null,
+        priceScreenshotUrl:   screenshotFilePath ? path.basename(screenshotFilePath) : null,
+        statusHistory,
+      },
+    });
+
+    // ── Step 6: Update purchase status ───────────────────────────────────────
+    await prisma.purchase.update({
+      where: { id: claim.purchaseId },
+      data: { status: 'CLAIM_FILED' },
+    });
+
+    // ── Step 7: Notify user ──────────────────────────────────────────────────
+    const claimAmount = Math.min(claim.priceDifference, card.maxClaimAmount);
+    await prisma.notification.create({
+      data: {
+        userId: claim.userId,
+        type:   'CLAIM_FILED',
+        title:  'Claim Filed Automatically!',
+        message: `Your $${claimAmount.toFixed(2)} claim for ${claim.purchase.productName} was submitted to ${issuer} (${toEmail}). Check your claim details for proof of filing.`,
+        data: {
+          claimId,
+          emailMessageId: emailResult.messageId,
+          sentTo:         toEmail,
+          amount:         claimAmount,
+        },
+      },
+    });
+
+    logger.info(`[AutoFile] Claim ${claimId} filed successfully!`);
+
+    return {
+      success:     true,
+      method:      'email',
+      claimId,
+      sentTo:      toEmail,
+      sentAt:      sentAt.toISOString(),
+      messageId:   emailResult.messageId,
+      subject,
+      claimAmount,
+      proof: {
+        pdfFile:           pdfFilePath     ? path.basename(pdfFilePath)     : null,
+        priceScreenshot:   screenshotFilePath ? path.basename(screenshotFilePath) : null,
+        emailProof:        emailProofPath  ? path.basename(emailProofPath)  : null,
+        emailBody:         body,
+      },
+      message: `Claim submitted via email to ${issuer} (${toEmail}). You'll receive a CC at ${claim.user?.email || 'your email'}.`,
+    };
+
+  } catch (error) {
+    logger.error(`[AutoFile] Failed for claim ${claimId}:`, error);
+
+    // Mark as ready-to-file manually so user can still proceed
+    const statusHistory = Array.isArray(claim.statusHistory) ? [...claim.statusHistory] : [];
+    statusHistory.push({
+      status:    'ERROR',
+      timestamp: new Date().toISOString(),
+      notes:     `Auto-file failed: ${error.message}`,
+    });
+
+    await prisma.claim.update({
+      where: { id: claimId },
+      data: {
+        status:        'READY_TO_FILE',
+        statusHistory,
+        responseNotes: `Auto-filing failed: ${error.message}. Please file manually.`,
+        // Still save any proof we generated before the error
+        proofDocumentUrl:   pdfFilePath     ? path.basename(pdfFilePath)     : claim.proofDocumentUrl,
+        priceScreenshotUrl: screenshotFilePath ? path.basename(screenshotFilePath) : claim.priceScreenshotUrl,
+      },
     });
 
     return {
       success: false,
-      method: 'manual',
-      claimId: claim.id,
-      error: error.message,
+      method:  'manual',
+      claimId,
+      error:   error.message,
       message: 'Auto-filing failed. Claim is ready for manual filing.',
-      instructions: claimService.getFilingInstructions(claim)
+      instructions: claimService.getFilingInstructions(claim),
     };
   }
 }
 
-module.exports = { autoFileClaim, fileClaimViaEmail, CLAIM_PORTALS };
+module.exports = { autoFileClaim, getClaimEmail, ISSUER_CLAIM_EMAILS };

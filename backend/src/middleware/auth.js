@@ -8,11 +8,17 @@ const authenticate = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw new AppError('No token provided', 401);
+    // Support token via query param (for file downloads opened in new tabs)
+    let token = null;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.split(' ')[1];
+    } else if (req.query.token) {
+      token = req.query.token;
     }
 
-    const token = authHeader.split(' ')[1];
+    if (!token) {
+      throw new AppError('No token provided', 401);
+    }
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     const user = await prisma.user.findUnique({

@@ -29,9 +29,9 @@ const CARD_ISSUERS = {
     priceProtection: {
       protectionDays: 60,
       maxClaimAmount: 250,
-      claimMethod: 'PHONE',
-      claimEmail: null,
-      claimPhone: null,
+      claimMethod: 'EMAIL',
+      claimEmail: 'visabenefits@cardbenefitservices.com',
+      claimPhone: '1-800-847-2911',
       claimPortalUrl: null
     }
   },
@@ -44,9 +44,9 @@ const CARD_ISSUERS = {
     priceProtection: {
       protectionDays: 60,
       maxClaimAmount: 250,
-      claimMethod: 'PHONE',
-      claimEmail: null,
-      claimPhone: null,
+      claimMethod: 'EMAIL',
+      claimEmail: 'mastercardbenefits@cardbenefitservices.com',
+      claimPhone: '1-800-627-8372',
       claimPortalUrl: null
     }
   },
@@ -59,8 +59,8 @@ const CARD_ISSUERS = {
     priceProtection: {
       protectionDays: 90,
       maxClaimAmount: 500,
-      claimMethod: 'ONLINE_PORTAL',
-      claimEmail: null,
+      claimMethod: 'EMAIL',
+      claimEmail: 'discover@cardbenefitservices.com',
       claimPhone: '1-800-347-2683',
       claimPortalUrl: 'https://www.discover.com/credit-cards/member-benefits/'
     }
@@ -74,8 +74,8 @@ const BANK_ISSUERS = {
     priceProtection: {
       protectionDays: 120,
       maxClaimAmount: 500,
-      claimMethod: 'ONLINE_PORTAL',
-      claimEmail: null,
+      claimMethod: 'EMAIL',
+      claimEmail: 'cardbenefitservices@eclaimsline.com',
       claimPhone: '1-888-320-9961',
       claimPortalUrl: 'https://www.chasebenefits.com/chase'
     }
@@ -86,8 +86,8 @@ const BANK_ISSUERS = {
     priceProtection: {
       protectionDays: 60,
       maxClaimAmount: 250,
-      claimMethod: 'PHONE',
-      claimEmail: null,
+      claimMethod: 'EMAIL',
+      claimEmail: 'citibenefit@aon.com',
       claimPhone: '1-866-918-4969',
       claimPortalUrl: 'https://www.cardbenefitservices.com/ebdcaz/completeReg.do'
     }
@@ -98,8 +98,8 @@ const BANK_ISSUERS = {
     priceProtection: {
       protectionDays: 60,
       maxClaimAmount: 250,
-      claimMethod: 'PHONE',
-      claimEmail: null,
+      claimMethod: 'EMAIL',
+      claimEmail: 'priceprotection@capitalone.com',
       claimPhone: '1-800-227-4825',
       claimPortalUrl: null
     }

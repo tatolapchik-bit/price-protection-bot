@@ -25,10 +25,10 @@ function setupCronJobs() {
   cron.schedule('0 */4 * * *', async () => {
     logger.info('Starting scheduled email sync...');
     try {
+      // Sync emails for ALL users with Gmail connected (including free tier)
       const users = await prisma.user.findMany({
         where: {
-          gmailConnected: true,
-          subscriptionStatus: 'ACTIVE'
+          gmailConnected: true
         },
         select: { id: true }
       });

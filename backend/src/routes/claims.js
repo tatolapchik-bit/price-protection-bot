@@ -5,6 +5,8 @@ const { authenticate, requireSubscription } = require('../middleware/auth');
 const { AppError } = require('../middleware/errorHandler');
 const claimService = require('../services/claimService');
 const autoClaimFiler = require('../services/autoClaimFiler');
+const path = require('path');
+const fs = require('fs').promises;
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -274,7 +276,7 @@ router.post('/:id/file', authenticate, [
 
 // Update claim status (for tracking resolution)
 router.patch('/:id/status', authenticate, [
-  body('status').isIn(['PENDING_REVIEW', 'ADDITIONAL_INFO_NEEDED', 'APPROVED', 'DENIED']),
+  body('status').isIn(['PENDING_REVIEW', 'ADDITIONAL_INFO_NEEDED', 'APPROVED', 'DENIED', 'MONEY_RECEIVED']),
   body('claimNumber').optional().trim(),
   body('approvedAmount').optional().isFloat({ min: 0 }),
   body('responseNotes').optional().trim()
@@ -426,7 +428,7 @@ router.post('/:id/auto-file', authenticate, async (req, res, next) => {
       throw new AppError('Claim not found', 404);
     }
 
-    if (!['DRAFT', 'READY_TO_FILE'].includes(claim.status)) {
+    if (!['DRAFT', 'READY_TO_FILE', 'PENDING'].includes(claim.status)) {
       throw new AppError('Claim has already been filed or processed', 400);
     }
 
@@ -434,6 +436,122 @@ router.post('/:id/auto-file', authenticate, async (req, res, next) => {
     const result = await autoClaimFiler.autoFileClaim(claim.id);
 
     res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── Proof endpoints ──────────────────────────────────────────────────────────
+
+// Get all proof data for a claim (JSON response with email details + base64 files)
+router.get('/:id/proof', authenticate, async (req, res, next) => {
+  try {
+    const claim = await prisma.claim.findFirst({
+      where: {
+        id: req.params.id,
+        userId: req.user.id
+      },
+      include: {
+        purchase: { select: { productName: true, retailer: true, productUrl: true } },
+        creditCard: { select: { nickname: true, issuer: true, lastFour: true } }
+      }
+    });
+
+    if (!claim) {
+      throw new AppError('Claim not found', 404);
+    }
+
+    const proof = {
+      claimId:          claim.id,
+      status:           claim.status,
+      autoFiled:        claim.autoFiled || false,
+      filedAt:          claim.filedAt,
+      // Email details
+      emailSentTo:      claim.claimEmailTo,
+      emailSubject:     claim.claimEmailSubject,
+      emailBody:        claim.claimEmailBody,
+      emailSentAt:      claim.claimEmailSentAt,
+      emailMessageId:   claim.claimEmailMessageId,
+      // File references (frontend can use /claims/:id/proof/:type to fetch)
+      hasClaimPdf:       !!claim.proofDocumentUrl,
+      hasPriceScreenshot: !!claim.priceScreenshotUrl,
+      hasEmailProof:     !!claim.claimEmailScreenshot,
+      // Metadata
+      responseNotes:    claim.responseNotes,
+      statusHistory:    claim.statusHistory,
+    };
+
+    res.json(proof);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Serve a specific proof file (pdf, price-screenshot, or email-screenshot)
+router.get('/:id/proof/:type', authenticate, async (req, res, next) => {
+  try {
+    const { type } = req.params;
+
+    const claim = await prisma.claim.findFirst({
+      where: {
+        id: req.params.id,
+        userId: req.user.id
+      }
+    });
+
+    if (!claim) {
+      throw new AppError('Claim not found', 404);
+    }
+
+    let fileName = null;
+    let contentType = 'application/octet-stream';
+
+    switch (type) {
+      case 'pdf':
+        fileName = claim.proofDocumentUrl;
+        contentType = 'application/pdf';
+        break;
+      case 'price-screenshot':
+        fileName = claim.priceScreenshotUrl;
+        contentType = 'image/png';
+        break;
+      case 'email-screenshot':
+        fileName = claim.claimEmailScreenshot;
+        contentType = 'image/png';
+        break;
+      default:
+        throw new AppError('Invalid proof type. Use: pdf, price-screenshot, or email-screenshot', 400);
+    }
+
+    if (!fileName) {
+      throw new AppError(`No ${type} proof available for this claim`, 404);
+    }
+
+    // The file might be a full path or just a filename
+    const filePath = fileName.startsWith('/') ? fileName : path.join('/tmp', fileName);
+
+    try {
+      await fs.access(filePath);
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+      const fileBuffer = await fs.readFile(filePath);
+      res.send(fileBuffer);
+    } catch (fileErr) {
+      // File not found on disk (maybe after a redeploy) — return the text-based proof instead
+      if (type === 'pdf' && claim.claimEmailBody) {
+        // Return a simple text response with the claim details
+        res.json({
+          fallback: true,
+          message: 'PDF file no longer available on server. Here are the claim details:',
+          emailBody: claim.claimEmailBody,
+          emailSubject: claim.claimEmailSubject,
+          sentTo: claim.claimEmailTo,
+          sentAt: claim.claimEmailSentAt,
+        });
+      } else {
+        throw new AppError(`Proof file no longer available on server. Claim details are still stored in the database.`, 404);
+      }
+    }
   } catch (error) {
     next(error);
   }

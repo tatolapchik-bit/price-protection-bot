@@ -6,11 +6,30 @@ import {
   DocumentArrowDownIcon,
   CheckCircleIcon,
   RocketLaunchIcon,
-  ArrowPathIcon
+  ArrowPathIcon,
+  EnvelopeIcon,
+  ShieldCheckIcon,
+  PhotoIcon,
+  DocumentTextIcon,
+  ClipboardDocumentCheckIcon
 } from '@heroicons/react/24/outline';
 import { claimsAPI } from '../services/api';
 import { format } from 'date-fns';
 import toast from 'react-hot-toast';
+
+const statusColors = {
+  DRAFT: 'bg-gray-100 text-gray-700',
+  READY_TO_FILE: 'bg-blue-100 text-blue-700',
+  PENDING: 'bg-yellow-100 text-yellow-700',
+  EMAIL_SENT: 'bg-indigo-100 text-indigo-700',
+  FILED: 'bg-blue-100 text-blue-700',
+  PENDING_REVIEW: 'bg-yellow-100 text-yellow-700',
+  ADDITIONAL_INFO_NEEDED: 'bg-orange-100 text-orange-700',
+  APPROVED: 'bg-green-100 text-green-700',
+  DENIED: 'bg-red-100 text-red-700',
+  EXPIRED: 'bg-gray-100 text-gray-500',
+  MONEY_RECEIVED: 'bg-emerald-100 text-emerald-700',
+};
 
 export default function ClaimDetail() {
   const { id } = useParams();
@@ -28,9 +47,15 @@ export default function ClaimDetail() {
     enabled: !!data
   });
 
+  const { data: proofData } = useQuery({
+    queryKey: ['claim-proof', id],
+    queryFn: () => claimsAPI.getProof(id),
+    enabled: !!data
+  });
+
   const generateDocsMutation = useMutation({
     mutationFn: () => claimsAPI.generateDocs(id),
-    onSuccess: (result) => {
+    onSuccess: () => {
       queryClient.invalidateQueries(['claim', id]);
       toast.success('Documentation generated!');
     },
@@ -61,14 +86,14 @@ export default function ClaimDetail() {
     }
   });
 
-  // Auto-file mutation for fully automated claim submission
   const autoFileMutation = useMutation({
     mutationFn: () => claimsAPI.autoFile(id),
     onSuccess: (result) => {
       queryClient.invalidateQueries(['claim', id]);
       queryClient.invalidateQueries(['claims']);
+      queryClient.invalidateQueries(['claim-proof', id]);
       if (result.data.success) {
-        toast.success('🎉 Claim automatically filed! Check your email for confirmation.', {
+        toast.success('Claim automatically filed! Check the proof below.', {
           duration: 5000
         });
       } else {
@@ -101,6 +126,15 @@ export default function ClaimDetail() {
   }
 
   const inst = instructions?.data;
+  const proof = proofData?.data;
+  const isFiled = ['EMAIL_SENT', 'FILED', 'PENDING_REVIEW', 'APPROVED', 'MONEY_RECEIVED'].includes(claim.status);
+
+  // Build proof file URLs with auth token
+  const token = localStorage.getItem('token');
+  const baseUrl = import.meta.env.VITE_API_URL || '/api';
+  const proofPdfUrl = proof?.hasClaimPdf ? `${baseUrl}/claims/${id}/proof/pdf?token=${token}` : null;
+  const proofPriceUrl = proof?.hasPriceScreenshot ? `${baseUrl}/claims/${id}/proof/price-screenshot?token=${token}` : null;
+  const proofEmailUrl = proof?.hasEmailProof ? `${baseUrl}/claims/${id}/proof/email-screenshot?token=${token}` : null;
 
   return (
     <div>
@@ -125,14 +159,17 @@ export default function ClaimDetail() {
                   {claim.purchase?.productName}
                 </p>
               </div>
-              <span className={`badge ${
-                claim.status === 'APPROVED' ? 'badge-green' :
-                claim.status === 'DENIED' ? 'badge-red' :
-                claim.status === 'FILED' || claim.status === 'PENDING_REVIEW' ? 'badge-blue' :
-                'badge-gray'
-              }`}>
-                {claim.status.replace(/_/g, ' ')}
-              </span>
+              <div className="flex items-center gap-2">
+                {claim.autoFiled && (
+                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
+                    <RocketLaunchIcon className="h-3.5 w-3.5 mr-1" />
+                    Auto-Filed
+                  </span>
+                )}
+                <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${statusColors[claim.status] || 'bg-gray-100 text-gray-700'}`}>
+                  {claim.status.replace(/_/g, ' ')}
+                </span>
+              </div>
             </div>
 
             <div className="mt-6 grid grid-cols-2 gap-4">
@@ -154,7 +191,134 @@ export default function ClaimDetail() {
             )}
           </div>
 
-          {/* Filing Instructions */}
+          {/* ── Proof of Filing Section ── */}
+          {isFiled && proof && (
+            <div className="card p-6 border-2 border-indigo-100">
+              <div className="flex items-center gap-2 mb-5">
+                <ShieldCheckIcon className="h-6 w-6 text-indigo-600" />
+                <h2 className="text-lg font-semibold text-gray-900">Proof of Filing</h2>
+              </div>
+
+              {/* Email Summary */}
+              {proof.emailSentTo && (
+                <div className="bg-indigo-50 rounded-lg p-4 mb-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <EnvelopeIcon className="h-5 w-5 text-indigo-600" />
+                    <h3 className="font-medium text-indigo-900">Claim Email Sent</h3>
+                  </div>
+                  <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                    <div>
+                      <dt className="text-indigo-600">Sent To</dt>
+                      <dd className="font-medium text-indigo-900">{proof.emailSentTo}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-indigo-600">Date Sent</dt>
+                      <dd className="font-medium text-indigo-900">
+                        {proof.emailSentAt ? format(new Date(proof.emailSentAt), 'MMM d, yyyy h:mm a') : '—'}
+                      </dd>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <dt className="text-indigo-600">Subject</dt>
+                      <dd className="font-medium text-indigo-900">{proof.emailSubject}</dd>
+                    </div>
+                    {proof.emailMessageId && (
+                      <div className="sm:col-span-2">
+                        <dt className="text-indigo-600">Message ID</dt>
+                        <dd className="font-mono text-xs text-indigo-700">{proof.emailMessageId}</dd>
+                      </div>
+                    )}
+                  </dl>
+                </div>
+              )}
+
+              {/* Proof Documents */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+                {proof.hasClaimPdf && (
+                  <a
+                    href={proofPdfUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg hover:border-indigo-300 hover:bg-indigo-50 transition-colors"
+                  >
+                    <DocumentTextIcon className="h-8 w-8 text-red-500 flex-shrink-0" />
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Claim PDF</p>
+                      <p className="text-xs text-gray-500">View document</p>
+                    </div>
+                  </a>
+                )}
+
+                {proof.hasPriceScreenshot && (
+                  <a
+                    href={proofPriceUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg hover:border-indigo-300 hover:bg-indigo-50 transition-colors"
+                  >
+                    <PhotoIcon className="h-8 w-8 text-blue-500 flex-shrink-0" />
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Price Screenshot</p>
+                      <p className="text-xs text-gray-500">View image</p>
+                    </div>
+                  </a>
+                )}
+
+                {proof.hasEmailProof && (
+                  <a
+                    href={proofEmailUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg hover:border-indigo-300 hover:bg-indigo-50 transition-colors"
+                  >
+                    <ClipboardDocumentCheckIcon className="h-8 w-8 text-green-500 flex-shrink-0" />
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Email Proof</p>
+                      <p className="text-xs text-gray-500">View screenshot</p>
+                    </div>
+                  </a>
+                )}
+              </div>
+
+              {/* Email Body (collapsible) */}
+              {proof.emailBody && (
+                <details className="bg-gray-50 rounded-lg">
+                  <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-gray-700 hover:text-gray-900">
+                    View full email sent to issuer
+                  </summary>
+                  <div className="px-4 pb-4">
+                    <pre className="text-xs text-gray-600 whitespace-pre-wrap font-mono bg-white p-4 rounded border border-gray-200 max-h-80 overflow-y-auto">
+                      {proof.emailBody}
+                    </pre>
+                  </div>
+                </details>
+              )}
+
+              {/* Status History */}
+              {proof.statusHistory && proof.statusHistory.length > 0 && (
+                <div className="mt-4">
+                  <h4 className="text-sm font-medium text-gray-700 mb-2">Timeline</h4>
+                  <div className="space-y-2">
+                    {proof.statusHistory.map((entry, idx) => (
+                      <div key={idx} className="flex items-start gap-3 text-sm">
+                        <div className="w-2 h-2 mt-1.5 rounded-full bg-indigo-400 flex-shrink-0" />
+                        <div>
+                          <span className="font-medium text-gray-900">{entry.status.replace(/_/g, ' ')}</span>
+                          <span className="text-gray-500 ml-2">
+                            {format(new Date(entry.timestamp), 'MMM d, yyyy h:mm a')}
+                          </span>
+                          {entry.notes && (
+                            <p className="text-gray-500 text-xs mt-0.5">{entry.notes}</p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Filing Instructions (only for unfiled claims) */}
           {inst && ['DRAFT', 'READY_TO_FILE'].includes(claim.status) && (
             <div className="card p-6">
               <h2 className="text-lg font-semibold text-gray-900 mb-4">
@@ -174,7 +338,7 @@ export default function ClaimDetail() {
                     rel="noopener noreferrer"
                     className="text-sm text-primary-600 hover:underline mt-1 block"
                   >
-                    Online Portal →
+                    Online Portal
                   </a>
                 )}
               </div>
@@ -210,7 +374,7 @@ export default function ClaimDetail() {
                   <p className={`font-medium ${
                     inst.deadlines.daysRemaining <= 7 ? 'text-red-700' : 'text-yellow-700'
                   }`}>
-                    ⏰ {inst.deadlines.daysRemaining} days remaining to file
+                    {inst.deadlines.daysRemaining} days remaining to file
                   </p>
                 </div>
               )}
@@ -263,7 +427,7 @@ export default function ClaimDetail() {
 
               {['DRAFT', 'READY_TO_FILE'].includes(claim.status) && (
                 <p className="text-xs text-gray-500 text-center">
-                  We'll automatically submit your claim with all documentation
+                  We'll email your claim with all documentation to the card issuer
                 </p>
               )}
 
@@ -291,7 +455,7 @@ export default function ClaimDetail() {
                 </button>
               )}
 
-              {claim.status === 'FILED' && (
+              {['EMAIL_SENT', 'FILED'].includes(claim.status) && (
                 <>
                   <button
                     onClick={() => {
@@ -314,18 +478,6 @@ export default function ClaimDetail() {
                     Mark as Denied
                   </button>
                 </>
-              )}
-
-              {claim.proofDocumentUrl && (
-                <a
-                  href={claim.proofDocumentUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full btn-secondary flex items-center justify-center"
-                >
-                  <DocumentArrowDownIcon className="h-5 w-5 mr-2" />
-                  Download Documentation
-                </a>
               )}
             </div>
           </div>
@@ -353,7 +505,7 @@ export default function ClaimDetail() {
               <div>
                 <dt className="text-sm text-gray-500">Credit Card</dt>
                 <dd className="text-sm font-medium">
-                  {claim.creditCard?.nickname} (•••• {claim.creditCard?.lastFour})
+                  {claim.creditCard?.nickname} ({claim.creditCard?.issuer} ending {claim.creditCard?.lastFour})
                 </dd>
               </div>
               <div>
