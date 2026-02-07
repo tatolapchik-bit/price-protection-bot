@@ -13,6 +13,7 @@ const subscriptionRoutes = require('./routes/subscription');
 const webhookRoutes = require('./routes/webhooks');
 const emailRoutes = require('./routes/email');
 const notificationRoutes = require('./routes/notifications');
+const adminRoutes = require('./routes/admin');
 
 const { errorHandler } = require('./middleware/errorHandler');
 const { setupCronJobs } = require('./workers/cron');
@@ -56,6 +57,7 @@ app.use('/api/cards', cardRoutes);
 app.use('/api/subscription', subscriptionRoutes);
 app.use('/api/email', emailRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
